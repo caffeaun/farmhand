@@ -1,0 +1,37 @@
+# Binaries
+farmhand
+bin/
+*.exe
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Go
+vendor/
+
+# Node
+ui/node_modules/
+ui/.svelte-kit/
+ui/dist/
+
+# Embedded UI build (generated)
+internal/embed/ui_dist/*
+!internal/embed/ui_dist/.gitkeep
+
+# Claude
+.claude/
+
+# Task artifacts
+tasks.json

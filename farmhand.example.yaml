@@ -1,0 +1,86 @@
+# FarmHand configuration example
+# Copy this file to farmhand.yaml and adjust the values for your environment.
+# All fields can also be overridden via FARMHAND_* environment variables.
+
+server:
+  # Address to bind the HTTP server to.
+  # Env: FARMHAND_HOST
+  host: "0.0.0.0"
+
+  # Port to listen on.
+  # Env: FARMHAND_PORT
+  port: 8080
+
+  # Bearer token required in the Authorization header for all API requests.
+  # Required in production. Leave empty only in dev_mode.
+  # Env: FARMHAND_AUTH_TOKEN
+  auth_token: ""
+
+  # Allowed CORS origins. Use ["*"] to allow all origins.
+  cors_origins:
+    - "*"
+
+  # Enable development mode: relaxes auth requirements, enables debug logging.
+  # Env: FARMHAND_DEV_MODE
+  dev_mode: false
+
+database:
+  # Path to the SQLite database file.
+  # Env: FARMHAND_DB_PATH
+  path: "farmhand.db"
+
+  # Number of days to retain historical job and metric data.
+  retention_days: 30
+
+devices:
+  # Automatically discover connected ADB devices at startup.
+  auto_discover: true
+
+  # How often (in seconds) to poll device status.
+  # Env: FARMHAND_DEVICE_POLL_INTERVAL
+  poll_interval_seconds: 5
+
+  # Skip devices whose battery is below this percentage.
+  min_battery_percent: 20
+
+  # Run adb shell cleanup commands between test runs.
+  cleanup_between_runs: true
+
+  # Send a wake command to the device before running tests.
+  wake_before_test: true
+
+  # Path to the adb binary. Defaults to "adb" from PATH.
+  # Env: FARMHAND_ADB_PATH
+  adb_path: "adb"
+
+jobs:
+  # Maximum time (minutes) a job may run before it is killed.
+  default_timeout_minutes: 30
+
+  # Maximum number of jobs that may execute in parallel.
+  max_concurrent_jobs: 3
+
+  # Directory where test artifacts (APKs, scripts) are stored.
+  # Env: FARMHAND_ARTIFACT_DIR
+  artifact_storage_path: "./artifacts"
+
+  # Directory where test result files are written.
+  result_storage_path: "./results"
+
+  # Directory where per-job log files are written.
+  # Env: FARMHAND_LOG_DIR
+  log_dir: "./logs"
+
+  # Maximum size (MB) of a single artifact file accepted by the API.
+  max_artifact_size_mb: 500
+
+notifications:
+  # Webhook URL to POST job status events to. Empty string disables webhooks.
+  # Env: FARMHAND_WEBHOOK_URL
+  webhook_url: ""
+
+  # Events that trigger a webhook notification.
+  # Valid values: "failure", "completion", "start"
+  notify_on:
+    - failure
+    - completion

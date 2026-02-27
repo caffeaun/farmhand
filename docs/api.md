@@ -1,0 +1,601 @@
+# FarmHand API Reference
+
+Base path: `/api/v1`
+
+## Authentication
+
+All endpoints except `GET /api/v1/health` require a bearer token.
+
+**Header (preferred)**
+```
+Authorization: Bearer <token>
+```
+
+**Query parameter (WebSocket upgrades)**
+```
+GET /api/v1/ws?token=<token>
+```
+
+When `auth_token` is empty in the server configuration, authentication is disabled and all requests are accepted.
+
+Incorrect or missing tokens return:
+```
+HTTP 401 Unauthorized
+{"error": "unauthorized"}
+```
+
+---
+
+## Health
+
+### GET /api/v1/health
+
+Public endpoint. Returns server status, version, and uptime.
+
+**Response — 200 OK**
+```json
+{
+  "status": "ok",
+  "version": "v0.1.0",
+  "uptime_seconds": 3600
+}
+```
+
+---
+
+## Devices
+
+### GET /api/v1/devices
+
+List all registered devices, optionally filtered.
+
+**Query parameters**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `platform` | string | Filter by platform: `android` or `ios` |
+| `tags` | string | Comma-separated list of tags. Device must have ALL specified tags. |
+
+**Response — 200 OK**
+
+Returns an array (empty array when no results, never null).
+
+```json
+[
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "serial": "emulator-5554",
+    "model": "Pixel 7",
+    "platform": "android",
+    "os_version": "14",
+    "status": "online",
+    "battery_level": 87,
+    "tags": ["production", "emea"],
+    "last_seen_at": "2026-02-27T10:00:00Z"
+  }
+]
+```
+
+**Device status values**: `online`, `offline`, `busy`
+
+---
+
+### GET /api/v1/devices/:id
+
+Get a single device by ID.
+
+**Response — 200 OK**
+
+Returns a single device object (same shape as the list item above).
+
+**Response — 404 Not Found**
+```json
+{"error": "device not found"}
+```
+
+---
+
+### GET /api/v1/devices/:id/health
+
+Get real-time health metrics for a device.
+
+**Response — 200 OK**
+```json
+{
+  "cpu_usage": 12.5,
+  "memory_usage": 48.3,
+  "battery_level": 87,
+  "disk_free_bytes": 10737418240,
+  "temperature": 34.0
+}
+```
+
+**Response — 404 Not Found**
+```json
+{"error": "device not found"}
+```
+
+---
+
+### POST /api/v1/devices/:id/wake
+
+Send a wake-screen command to the device.
+
+**Request body**: none
+
+**Response — 200 OK**
+```json
+{"message": "wake command sent"}
+```
+
+**Response — 404 Not Found**
+```json
+{"error": "device not found"}
+```
+
+**Response — 409 Conflict** (device is offline)
+```json
+{"error": "device emulator-5554 is offline"}
+```
+
+---
+
+### POST /api/v1/devices/:id/reboot
+
+Initiate a device reboot. Returns immediately; the reboot continues asynchronously.
+
+**Request body**: none
+
+**Response — 202 Accepted**
+```json
+{"message": "reboot initiated"}
+```
+
+**Response — 404 Not Found**
+```json
+{"error": "device not found"}
+```
+
+---
+
+## Jobs
+
+### POST /api/v1/jobs
+
+Create and immediately schedule a new job. Scheduling and execution happen asynchronously after the response is returned.
+
+**Request body**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `test_command` | string | yes | Shell command to run on each device via `/bin/sh -c` |
+| `strategy` | string | no | Execution strategy. Only `"fan-out"` (or empty) is accepted. |
+| `device_filter` | object | no | Filter criteria for device selection (see below) |
+| `artifact_path` | string | no | Path on the device to collect artifacts from |
+| `timeout_minutes` | int | no | Per-device timeout. Falls back to server default (30 min). |
+
+**device_filter object**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `platform` | string | `"android"` or `"ios"` |
+| `tags` | array of strings | Device must have all listed tags |
+
+```json
+{
+  "test_command": "pytest /data/tests/ --tb=short",
+  "strategy": "fan-out",
+  "device_filter": {
+    "platform": "android",
+    "tags": ["production"]
+  },
+  "timeout_minutes": 60
+}
+```
+
+**Response — 201 Created**
+
+Returns the created job record.
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "test_command": "pytest /data/tests/ --tb=short",
+  "strategy": "fan-out",
+  "device_filter": "{\"platform\":\"android\",\"tags\":[\"production\"]}",
+  "artifact_path": "",
+  "timeout_minutes": 60,
+  "status": "queued",
+  "created_at": "2026-02-27T10:00:00Z",
+  "started_at": null,
+  "completed_at": null
+}
+```
+
+**Job status values**: `queued`, `running`, `preparing`, `installing`, `completed`, `failed`, `cancelled`
+
+**Response — 422 Unprocessable Entity** (missing `test_command`)
+```json
+{
+  "error": "validation failed",
+  "fields": {"test_command": "test_command is required"}
+}
+```
+
+**Response — 422 Unprocessable Entity** (unsupported strategy)
+```json
+{"error": "unsupported strategy: shard"}
+```
+
+**Response — 500 Internal Server Error** (no available devices match the filter)
+```json
+{"error": "no available devices match the job filter"}
+```
+
+---
+
+### GET /api/v1/jobs
+
+List jobs. Returns at most 100 results, sorted by `created_at` descending.
+
+**Query parameters**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `status` | string | Filter by status: `queued`, `running`, `completed`, or `failed` |
+
+**Response — 200 OK**
+
+Returns an array of job objects (empty array when no results, never null).
+
+```json
+[
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "test_command": "pytest /data/tests/ --tb=short",
+    "status": "completed",
+    "created_at": "2026-02-27T10:00:00Z",
+    "started_at": "2026-02-27T10:00:05Z",
+    "completed_at": "2026-02-27T10:12:30Z"
+  }
+]
+```
+
+---
+
+### GET /api/v1/jobs/:id
+
+Get a single job with its per-device execution results.
+
+**Response — 200 OK**
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "test_command": "pytest /data/tests/ --tb=short",
+  "status": "completed",
+  "created_at": "2026-02-27T10:00:00Z",
+  "started_at": "2026-02-27T10:00:05Z",
+  "completed_at": "2026-02-27T10:12:30Z",
+  "results": [
+    {
+      "id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "device_id": "device-uuid",
+      "status": "passed",
+      "started_at": "2026-02-27T10:00:05Z",
+      "completed_at": "2026-02-27T10:12:30Z",
+      "exit_code": 0,
+      "error_message": null
+    }
+  ]
+}
+```
+
+**Job result status values**: `running`, `passed`, `failed`, `error`
+
+**Response — 404 Not Found**
+```json
+{"error": "job not found"}
+```
+
+---
+
+### DELETE /api/v1/jobs/:id
+
+Cancel a job by setting its status to `cancelled`. Returns HTTP 204 with no body.
+
+**Response — 204 No Content**
+
+**Response — 404 Not Found**
+```json
+{"error": "job not found"}
+```
+
+---
+
+## Logs
+
+### GET /api/v1/jobs/:id/status
+
+Lightweight status poll for a job. Returns only the status fields, not the full results list.
+
+**Response — 200 OK**
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "running",
+  "created_at": "2026-02-27T10:00:00Z",
+  "started_at": "2026-02-27T10:00:05Z",
+  "completed_at": null
+}
+```
+
+**Response — 404 Not Found**
+```json
+{"error": "job not found"}
+```
+
+---
+
+### GET /api/v1/jobs/:id/logs
+
+Stream job log output as Server-Sent Events (SSE).
+
+**Response headers**
+```
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+X-Accel-Buffering: no
+```
+
+**SSE event format**
+
+Each log line:
+```
+data: <log line text>\n\n
+```
+
+Terminal event (stream is complete):
+```
+event: done
+data: {}
+
+```
+
+The stream stays open until the job finishes or the client disconnects. When the client disconnects, the server-side goroutine is cancelled — no goroutine leak.
+
+**Response — 404 Not Found** (before SSE headers are written)
+```json
+{"error": "job not found"}
+```
+
+---
+
+## Artifacts
+
+### GET /api/v1/jobs/:id/artifacts
+
+List all artifact files collected from all devices that ran the job.
+
+**Response — 200 OK**
+
+Returns an array (empty when no artifacts).
+
+```json
+[
+  {
+    "filename": "test-results.xml",
+    "size_bytes": 48320,
+    "mime_type": "application/xml"
+  },
+  {
+    "filename": "screenshot.png",
+    "size_bytes": 204800,
+    "mime_type": "image/png"
+  }
+]
+```
+
+**Response — 404 Not Found**
+```json
+{"error": "job not found"}
+```
+
+---
+
+### GET /api/v1/jobs/:id/artifacts/*filepath
+
+Download an artifact file by name. Streams the file bytes with the appropriate `Content-Type` and a `Content-Disposition: attachment` header.
+
+**Path traversal protection**: Filenames containing `..`, null bytes, or percent-encoded `/` or `.` sequences are rejected.
+
+**Response — 200 OK**
+
+File bytes streamed with:
+```
+Content-Type: <detected MIME type>
+Content-Disposition: attachment; filename="<filename>"
+```
+
+**Response — 400 Bad Request** (invalid filename)
+```json
+{"error": "invalid filename"}
+```
+
+**Response — 404 Not Found**
+```json
+{"error": "job not found"}
+```
+or
+```json
+{"error": "artifact not found"}
+```
+
+---
+
+## System
+
+### GET /api/v1/config
+
+Return the running server configuration. The `auth_token` field is masked as `"***"` (empty when auth is disabled).
+
+**Response — 200 OK**
+```json
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "auth_token": "***",
+    "cors_origins": ["*"],
+    "dev_mode": false
+  },
+  "database": {
+    "path": "farmhand.db",
+    "retention_days": 30
+  },
+  "devices": {
+    "auto_discover": true,
+    "poll_interval_seconds": 5,
+    "min_battery_percent": 20,
+    "cleanup_between_runs": true,
+    "wake_before_test": true,
+    "adb_path": "adb"
+  },
+  "jobs": {
+    "default_timeout_minutes": 30,
+    "max_concurrent_jobs": 3,
+    "artifact_storage_path": "./artifacts",
+    "result_storage_path": "./results",
+    "log_dir": "./logs",
+    "max_artifact_size_mb": 500
+  },
+  "notifications": {
+    "webhook_url": "",
+    "notify_on": ["failure", "completion"]
+  }
+}
+```
+
+---
+
+### GET /api/v1/stats
+
+Return aggregated counts of devices and jobs by status, queried live from the database.
+
+**Response — 200 OK**
+```json
+{
+  "devices": {
+    "total": 5,
+    "online": 3,
+    "offline": 1,
+    "busy": 1
+  },
+  "jobs": {
+    "total": 42,
+    "queued": 1,
+    "running": 2,
+    "completed": 37,
+    "failed": 2
+  }
+}
+```
+
+---
+
+## WebSocket
+
+### GET /api/v1/ws
+
+Upgrade HTTP to WebSocket. Auth via `Authorization: Bearer <token>` header or `?token=<token>` query parameter.
+
+The server limits simultaneous connections to 100. Exceeding this returns:
+```
+HTTP 503 Service Unavailable
+{"error": "too many connections"}
+```
+
+### Message format
+
+All messages use a JSON envelope:
+```json
+{
+  "type": "<message type>",
+  "payload": <object>
+}
+```
+
+### Server-to-client message types
+
+**`device_snapshot`** — sent once on connect with all current devices.
+```json
+{
+  "type": "device_snapshot",
+  "payload": [ ...device objects... ]
+}
+```
+
+**`device_update`** — sent when a device's status changes.
+```json
+{
+  "type": "device_update",
+  "payload": { ...device object... }
+}
+```
+
+**`job_update`** — sent when a job's status changes (started, completed, failed).
+```json
+{
+  "type": "job_update",
+  "payload": { ...job object... }
+}
+```
+
+### Client-to-server messages
+
+The WebSocket endpoint does not process inbound messages. Clients may send pings to keep the connection alive; the server reads and discards all client messages. Client disconnect is detected by read errors on the server side.
+
+---
+
+## Error responses
+
+All error responses use the following shape:
+
+```json
+{"error": "<human-readable message>"}
+```
+
+Validation errors may include an additional `fields` object:
+
+```json
+{
+  "error": "validation failed",
+  "fields": {
+    "<field_name>": "<reason>"
+  }
+}
+```
+
+### Common HTTP status codes
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Success |
+| 201 | Resource created |
+| 202 | Accepted (async operation started) |
+| 204 | Success, no response body |
+| 400 | Bad request (invalid input) |
+| 401 | Unauthorized (missing or invalid token) |
+| 404 | Resource not found |
+| 409 | Conflict (e.g. device is offline) |
+| 422 | Unprocessable entity (validation failure) |
+| 500 | Internal server error |
+| 503 | Service unavailable (too many WebSocket connections) |
+
+---
+
+## Request tracing
+
+Every request receives a unique `X-Request-ID` header in the response. If the client sends an `X-Request-ID` request header, the same value is echoed back.
