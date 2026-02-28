@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -64,6 +65,13 @@ func (e *Executor) Run(ctx context.Context, execution Execution, outputCh chan<-
 
 	// Build command: /bin/sh -c "<test_command>"
 	cmd := exec.CommandContext(runCtx, "/bin/sh", "-c", execution.TestCommand)
+
+	// Run the command in its own process group so that context cancellation
+	// kills the entire tree (shell + children), not just the shell.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 
 	// Inherit current process environment then inject FARMHAND_* vars.
 	cmd.Env = os.Environ()
