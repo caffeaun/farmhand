@@ -135,24 +135,31 @@ func runServe(_ *cobra.Command, _ []string) error {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
+	deps := api.RouterDeps{
+		Config:            cfg,
+		DeviceRepo:        deviceRepo,
+		JobRepo:           jobRepo,
+		JobResultRepo:     jobResultRepo,
+		Scheduler:         scheduler,
+		Runner:            runner,
+		LogCollector:      logCollector,
+		ArtifactCollector: artifactCollector,
+		WSHub:             hub,
+	}
+	// Only set the interface field when the concrete pointer is non-nil.
+	// A nil *device.Manager assigned to a deviceManagerAPI interface produces
+	// a non-nil interface (typed nil), which bypasses the nil guard in NewRouter.
+	if deviceMgr != nil {
+		deps.DeviceManager = deviceMgr
+	}
+
 	router := api.NewRouter(
 		api.RouterConfig{
 			AuthToken:   cfg.Server.AuthToken,
 			CORSOrigins: cfg.Server.CORSOrigins,
 			Version:     version,
 		},
-		api.RouterDeps{
-			DeviceManager:     deviceMgr,
-			Config:            cfg,
-			DeviceRepo:        deviceRepo,
-			JobRepo:           jobRepo,
-			JobResultRepo:     jobResultRepo,
-			Scheduler:         scheduler,
-			Runner:            runner,
-			LogCollector:      logCollector,
-			ArtifactCollector: artifactCollector,
-			WSHub:             hub,
-		},
+		deps,
 	)
 
 	// Install the embedded UI handler as a NoRoute fallback so all non-API
