@@ -257,6 +257,29 @@ make test       # go test -race ./...
 make lint       # golangci-lint run ./...
 ```
 
+## Deployment
+
+FarmHand runs as a daemon service with Cloudflare Tunnel for secure remote API access. The dashboard stays local-only; only `/api/*` endpoints are exposed publicly.
+
+See [docs/deployment.md](docs/deployment.md) for the full deployment guide, including a real-world case study with Ubuntu (WSL) and Mac Mini hosts behind Cloudflare.
+
+### Quick overview
+
+```
+┌──────────────┐      Cloudflare Tunnel      ┌──────────────────────┐
+│   Client     │◄────────────────────────────►│ devices-1.kanolab.io │
+│  (curl/CI)   │    /api/v1/* only            │ Ubuntu/WSL + systemd │
+└──────────────┘    + auth_token              └──────────────────────┘
+
+┌──────────────┐      Cloudflare Tunnel      ┌──────────────────────┐
+│   Client     │◄────────────────────────────►│ devices-2.kanolab.io │
+│  (curl/CI)   │    /api/v1/* only            │ Mac Mini + launchd   │
+└──────────────┘    + auth_token              └──────────────────────┘
+```
+
+- Dashboard: `http://localhost:8080` (local access only)
+- API: `https://<host>.kanolab.io/api/v1/*` (Cloudflare, requires `Authorization: Bearer <token>`)
+
 ## License
 
 To be determined.
