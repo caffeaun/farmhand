@@ -369,7 +369,7 @@
 
 							<!-- Devices count -->
 							<td class="px-4 py-3 text-xs text-gray-400">
-								{job.results.length}
+								{job.results?.length ?? 0}
 							</td>
 
 							<!-- Created at -->
