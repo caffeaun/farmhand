@@ -531,6 +531,56 @@ export PATH=$PATH:$HOME/.pub-cache/bin
 
 ---
 
+## User Story: CI/CD Device Farm Gate for a Flutter App
+
+A team building a logistics Flutter app with Patrol E2E tests needed real-device testing as a mandatory gate before distributing Android and iOS builds. Running tests only on local simulators meant bugs could slip through to production.
+
+### Integration
+
+FarmHand was integrated as a pre-build quality gate in two CI pipelines:
+
+1. **GitHub Actions** (`deploy.yml`) — Patrol tests must pass on real devices before the Android APK build starts
+2. **Xcode Cloud** (`ci_pre_xcodebuild.sh`) — Same gate before iOS builds proceed
+
+### Flow
+
+```
+Push to main
+  → CI detects app/ changes
+  → Submits FarmHand job (fan-out strategy, Android devices)
+  → FarmHand clones repo, builds Flutter app, runs Patrol tests on all matched devices
+  → Streams SSE logs back to CI in real-time
+  → All devices pass → build proceeds
+  → Any device fails → build is blocked
+```
+
+### API usage in CI
+
+| Step | Endpoint | Purpose |
+|------|----------|---------|
+| Submit job | `POST /api/v1/jobs` | Fan-out test command across all Android devices |
+| Stream logs | `GET /api/v1/jobs/:id/logs` | Real-time SSE output visible in CI logs |
+| Poll status | `GET /api/v1/jobs/:id/status` | Check pass/fail for gate decision |
+| Cancel on abort | `DELETE /api/v1/jobs/:id` | Clean up if CI workflow is cancelled |
+
+The test command clones the repo, sets up the environment, and runs `patrol test --device $FARMHAND_DEVICE_SERIAL` — FarmHand injects the serial automatically so the same command works on any device.
+
+### Results
+
+- **Setup time**: Full CI integration (GitHub Actions workflow + Xcode Cloud script) built in a single session
+- **Test duration**: ~2 minutes for 2 Patrol journey tests across 2 devices
+- **Outcome**: Every push to `main` that touches the Flutter app runs Patrol E2E tests on real Android devices before any build artifact is produced
+
+### What worked well
+
+- **Simple REST API** — submit a job with a shell command, poll or stream for results; no SDK or plugin needed
+- **Fan-out** — one API call runs the same tests across all matched devices simultaneously
+- **SSE log streaming** — real-time test output visible directly in GitHub Actions logs
+- **Device-injected env vars** (`FARMHAND_DEVICE_SERIAL`) — makes the test command device-agnostic
+- **Fast feedback loop** — when things broke (git ref conflicts, missing dependencies), FarmHand logs made debugging straightforward
+
+---
+
 ## Updating FarmHand
 
 ```bash
