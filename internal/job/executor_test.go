@@ -176,6 +176,36 @@ func TestRun_OutputChannel(t *testing.T) {
 	assert.Contains(t, combined, "line3")
 }
 
+// TestRun_WorkspaceIsolation verifies that FARMHAND_WORKSPACE is set and the
+// command runs inside the isolated workspace directory.
+func TestRun_WorkspaceIsolation(t *testing.T) {
+	executor, _ := newTestExecutor(t)
+	outputCh := make(chan string, 16)
+
+	exec := newExecution(func(e *Execution) {
+		e.JobID = "job-ws"
+		e.DeviceID = "dev-ws"
+		e.TestCommand = "echo $FARMHAND_WORKSPACE && pwd"
+	})
+
+	result := executor.Run(context.Background(), exec, outputCh)
+	require.Equal(t, 0, result.ExitCode)
+
+	data, err := os.ReadFile(result.LogPath)
+	require.NoError(t, err)
+	output := string(data)
+
+	expectedSuffix := filepath.Join("farmhand", "job-ws", "dev-ws")
+	assert.Contains(t, output, expectedSuffix, "FARMHAND_WORKSPACE should contain job/device path")
+
+	// pwd output should end with the same workspace suffix (macOS resolves
+	// /var -> /private/var so we compare suffixes rather than exact paths).
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	require.Len(t, lines, 2, "should have FARMHAND_WORKSPACE and pwd lines")
+	assert.True(t, strings.HasSuffix(lines[1], expectedSuffix),
+		"pwd (%s) should end with %s", lines[1], expectedSuffix)
+}
+
 // TestRun_ContextCancellation verifies the process is stopped when the parent
 // context is cancelled.
 func TestRun_ContextCancellation(t *testing.T) {

@@ -30,8 +30,12 @@ func NewExecutor(logDir string, logger zerolog.Logger) *Executor {
 //
 // The command is run via /bin/sh -c to support shell quoting and pipes.
 // FARMHAND_DEVICE_ID, FARMHAND_DEVICE_SERIAL, FARMHAND_DEVICE_PLATFORM,
-// FARMHAND_JOB_ID, and all Execution.Env entries are injected into the
-// command environment.
+// FARMHAND_JOB_ID, FARMHAND_WORKSPACE, and all Execution.Env entries are
+// injected into the command environment.
+//
+// Each execution runs in an isolated workspace directory at
+// $TMPDIR/farmhand/<jobID>/<deviceID>/ so that fan-out jobs on the same
+// host do not collide (e.g. concurrent git operations on the same repo).
 //
 // stdout and stderr are captured to <logDir>/<jobID>/<deviceID>.log and
 // streamed line-by-line to outputCh using a non-blocking send so the
@@ -73,6 +77,17 @@ func (e *Executor) Run(ctx context.Context, execution Execution, outputCh chan<-
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 
+	// Create per-device workspace directory so fan-out jobs don't collide.
+	workspaceDir := filepath.Join(os.TempDir(), "farmhand", execution.JobID, execution.DeviceID)
+	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
+		return ExecResult{
+			ExitCode: -1,
+			Duration: time.Since(start),
+			Error:    fmt.Errorf("create workspace dir: %w", err),
+		}
+	}
+	cmd.Dir = workspaceDir
+
 	// Inherit current process environment then inject FARMHAND_* vars.
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env,
@@ -80,6 +95,7 @@ func (e *Executor) Run(ctx context.Context, execution Execution, outputCh chan<-
 		"FARMHAND_DEVICE_SERIAL="+execution.DeviceSerial,
 		"FARMHAND_DEVICE_PLATFORM="+execution.DevicePlatform,
 		"FARMHAND_JOB_ID="+execution.JobID,
+		"FARMHAND_WORKSPACE="+workspaceDir,
 	)
 	for k, v := range execution.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
