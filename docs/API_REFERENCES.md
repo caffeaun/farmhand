@@ -1,5 +1,7 @@
 # FarmHand API Reference
 
+**Related docs**: [Use Cases](use-cases/) | [README](../README.md)
+
 Base path: `/api/v1`
 
 ## Authentication

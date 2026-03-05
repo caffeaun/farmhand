@@ -116,7 +116,7 @@ All protected endpoints require `Authorization: Bearer <token>`. The base path i
 | `GET` | `/api/v1/stats` | Device and job counts by status |
 | `GET` | `/api/v1/ws` | WebSocket upgrade (`ws://`) |
 
-See [docs/api.md](docs/api.md) for the full API reference with request/response shapes.
+See [docs/API_REFERENCES.md](docs/API_REFERENCES.md) for the full API reference with request/response shapes.
 
 ## CLI Commands
 
@@ -259,26 +259,36 @@ make lint       # golangci-lint run ./...
 
 ## Deployment
 
-FarmHand runs as a daemon service with Cloudflare Tunnel for secure remote API access. The dashboard stays local-only; only `/api/*` endpoints are exposed publicly.
-
-See [docs/deployment.md](docs/deployment.md) for the full deployment guide, including a real-world case study with Ubuntu (WSL) and Mac Mini hosts behind Cloudflare.
-
-### Quick overview
+FarmHand runs as a daemon service (systemd on Linux, launchd on macOS) with Cloudflare Tunnel for secure remote API access. The dashboard stays local-only; only `/api/v1/*` endpoints are exposed publicly behind an auth token.
 
 ```
-┌──────────────┐      Cloudflare Tunnel      ┌──────────────────────┐
-│   Client     │◄────────────────────────────►│ devices-1.kanolab.io │
-│  (curl/CI)   │    /api/v1/* only            │ Ubuntu/WSL + systemd │
-└──────────────┘    + auth_token              └──────────────────────┘
-
-┌──────────────┐      Cloudflare Tunnel      ┌──────────────────────┐
-│   Client     │◄────────────────────────────►│ devices-2.kanolab.io │
-│  (curl/CI)   │    /api/v1/* only            │ Mac Mini + launchd   │
-└──────────────┘    + auth_token              └──────────────────────┘
+                         ┌─────────────────┐
+                         │   Cloudflare     │
+                         │   (DNS + Tunnel) │
+                         └────┬────────┬────┘
+                              │        │
+              /api/v1/* only  │        │  /api/v1/* only
+              + auth_token    │        │  + auth_token
+                              │        │
+                    ┌─────────▼──┐  ┌──▼─────────┐
+                    │ Ubuntu/WSL │  │ Mac Mini    │
+                    │ systemd    │  │ launchd     │
+                    │ :8080      │  │ :8080       │
+                    └─────┬──────┘  └──┬──────────┘
+                          │            │
+                    ┌─────▼──┐    ┌────▼─────┐
+                    │ Android │    │ Android  │
+                    │ devices │    │ + iOS    │
+                    └────────┘    └──────────┘
 ```
 
-- Dashboard: `http://localhost:8080` (local access only)
-- API: `https://<host>.kanolab.io/api/v1/*` (Cloudflare, requires `Authorization: Bearer <token>`)
+| Access | What | Auth |
+|--------|------|------|
+| Local only | Dashboard (`http://localhost:8080`) | None |
+| Public (Cloudflare) | API (`https://<host>/api/v1/*`) | Bearer token |
+
+See [docs/use-cases/](docs/use-cases/) for deployment guides:
+- [01-ubuntu-with-flutter-android.md](docs/use-cases/01-ubuntu-with-flutter-android.md) — Full Ubuntu setup from scratch: Java 17, Android SDK/NDK, Flutter, Patrol CLI, FarmHand daemon, Cloudflare Tunnel
 
 ## License
 
