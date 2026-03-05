@@ -30,6 +30,7 @@
 
 	function handleSaveToken() {
 		if (!browser) return;
+		tokenInput = tokenInput.trim();
 		localStorage.setItem(TOKEN_KEY, tokenInput);
 		hasStoredToken = tokenInput.length > 0;
 		tokenSaved = true;

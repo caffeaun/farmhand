@@ -13,6 +13,7 @@
  */
 
 import type { WSMessage } from '$lib/types';
+import { TOKEN_KEY } from '$lib/api';
 
 const BACKOFF_INITIAL_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
@@ -23,7 +24,9 @@ function buildWsUrl(): string {
 		return 'ws://localhost:8080/api/v1/ws';
 	}
 	const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-	return `${protocol}://${location.host}/api/v1/ws`;
+	const token = localStorage.getItem(TOKEN_KEY);
+	const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+	return `${protocol}://${location.host}/api/v1/ws${qs}`;
 }
 
 export class FarmhandWS {

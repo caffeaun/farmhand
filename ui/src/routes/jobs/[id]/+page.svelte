@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { getJob, getJobArtifacts } from '$lib/api';
+	import { getJob, getJobArtifacts, TOKEN_KEY } from '$lib/api';
 	import type { Artifact, Job, JobResultStatus, JobStatus } from '$lib/types';
 
 	// ─── Route param ─────────────────────────────────────────────────────────────
@@ -67,7 +67,9 @@
 		logError = null;
 		sseConnected = false;
 
-		const es = new EventSource(`/api/v1/jobs/${id}/logs`);
+		const token = typeof localStorage !== 'undefined' ? localStorage.getItem(TOKEN_KEY) : null;
+		const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+		const es = new EventSource(`/api/v1/jobs/${id}/logs${qs}`);
 		activeEventSource = es;
 
 		es.onopen = () => {
