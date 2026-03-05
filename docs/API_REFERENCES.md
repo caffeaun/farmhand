@@ -204,7 +204,7 @@ Returns the created job record.
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "test_command": "pytest /data/tests/ --tb=short",
   "strategy": "fan-out",
-  "device_filter": "{\"platform\":\"android\",\"tags\":[\"production\"]}",
+  "device_filter": {"platform": "android", "tags": ["production"]},
   "artifact_path": "",
   "timeout_minutes": 60,
   "status": "queued",
@@ -285,14 +285,31 @@ Get a single job with its per-device execution results.
       "job_id": "550e8400-e29b-41d4-a716-446655440000",
       "device_id": "device-uuid",
       "status": "passed",
-      "started_at": "2026-02-27T10:00:05Z",
-      "completed_at": "2026-02-27T10:12:30Z",
       "exit_code": 0,
-      "error_message": null
+      "duration_seconds": 745,
+      "log_path": "./logs/550e8400/device-uuid.log",
+      "artifacts": "[]",
+      "error_message": "",
+      "created_at": "2026-02-27T10:00:05Z"
     }
   ]
 }
 ```
+
+**Job result fields**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string (UUID) | Unique identifier for this result row |
+| `job_id` | string (UUID) | ID of the parent job |
+| `device_id` | string (UUID) | ID of the device that ran the test |
+| `status` | string | Result status (see values below) |
+| `exit_code` | int | Process exit code from the test command |
+| `duration_seconds` | int | Wall-clock seconds the command ran |
+| `log_path` | string | Server-side path to the raw log file |
+| `artifacts` | string | JSON array of artifact filenames |
+| `error_message` | string | Human-readable failure description. Always present. Empty string `""` when the device passed; populated with the last output lines or a summary when status is `failed` or `error`. Never `null`. |
+| `created_at` | string (RFC 3339) | Timestamp when the result row was created |
 
 **Job result status values**: `running`, `passed`, `failed`, `error`
 
@@ -342,7 +359,7 @@ Lightweight status poll for a job. Returns only the status fields, not the full 
 
 ### GET /api/v1/jobs/:id/logs
 
-Stream job log output as Server-Sent Events (SSE).
+Stream job log output as Server-Sent Events (SSE). Streams logs from all devices that ran the job.
 
 **Response headers**
 ```
@@ -371,6 +388,69 @@ The stream stays open until the job finishes or the client disconnects. When the
 **Response — 404 Not Found** (before SSE headers are written)
 ```json
 {"error": "job not found"}
+```
+
+---
+
+### GET /api/v1/jobs/:id/logs/:device_id
+
+Stream log output for a single device within a job as Server-Sent Events (SSE).
+
+**Path parameters**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Job UUID |
+| `device_id` | Device UUID. Must correspond to a `JobResult` row for the given job. |
+
+**Response headers**
+```
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+X-Accel-Buffering: no
+```
+
+**SSE event format**
+
+Each log line:
+```
+data: <log line text>\n\n
+```
+
+Terminal event (stream is complete):
+```
+event: done
+data: {}
+
+```
+
+For a **completed/failed/cancelled** job the full log is read from disk, each line is emitted as a `data:` event, and the `done` event is sent immediately — no client disconnect required.
+
+For a **running** job the stream is live-tailed. The stream closes with the `done` event when the job finishes or when the client disconnects.
+
+**Response — 404 Not Found** (job does not exist)
+```json
+{"error": "job not found"}
+```
+
+**Response — 404 Not Found** (device has no result row for this job)
+```json
+{"error": "device log not found"}
+```
+
+**Example**
+
+```
+GET /api/v1/jobs/550e8400-e29b-41d4-a716-446655440000/logs/6ba7b810-9dad-11d1-80b4-00c04fd430c8
+```
+
+```
+data: Installing test runner...\n\n
+data: Running pytest /data/tests/ --tb=short\n\n
+data: 2 passed in 12.3s\n\n
+event: done
+data: {}\n\n
 ```
 
 ---

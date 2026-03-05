@@ -58,13 +58,13 @@ func TestSchema_Idempotency(t *testing.T) {
 	}
 	t.Cleanup(func() { db2.Close() }) //nolint:errcheck
 
-	// schema_migrations must have exactly 3 rows (not 6)
+	// schema_migrations must have exactly 4 rows (not 8)
 	var count int
 	if err := db2.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 3 {
-		t.Errorf("schema_migrations rows = %d, want 3", count)
+	if count != 4 {
+		t.Errorf("schema_migrations rows = %d, want 4", count)
 	}
 }
 

@@ -206,6 +206,52 @@ func TestRun_WorkspaceIsolation(t *testing.T) {
 		"pwd (%s) should end with %s", lines[1], expectedSuffix)
 }
 
+// TestRun_ErrorMessage_WithOutput verifies that when a command exits non-zero
+// and produces output, ErrorMessage contains the output.
+func TestRun_ErrorMessage_WithOutput(t *testing.T) {
+	executor, _ := newTestExecutor(t)
+	outputCh := make(chan string, 64)
+
+	exec := newExecution(func(e *Execution) {
+		e.TestCommand = "echo fail-output && exit 1"
+	})
+
+	result := executor.Run(context.Background(), exec, outputCh)
+
+	assert.Equal(t, 1, result.ExitCode)
+	assert.Contains(t, result.ErrorMessage, "fail-output",
+		"ErrorMessage should contain the command output")
+}
+
+// TestRun_ErrorMessage_NoOutput verifies that when a command exits non-zero
+// without any output, ErrorMessage falls back to the generic code message.
+func TestRun_ErrorMessage_NoOutput(t *testing.T) {
+	executor, _ := newTestExecutor(t)
+	outputCh := make(chan string, 64)
+
+	exec := newExecution(func(e *Execution) {
+		e.TestCommand = "exit 1"
+	})
+
+	result := executor.Run(context.Background(), exec, outputCh)
+
+	assert.Equal(t, 1, result.ExitCode)
+	assert.Equal(t, "command exited with code 1", result.ErrorMessage)
+}
+
+// TestRun_ErrorMessage_Success verifies that ErrorMessage is empty on success.
+func TestRun_ErrorMessage_Success(t *testing.T) {
+	executor, _ := newTestExecutor(t)
+	outputCh := make(chan string, 16)
+
+	result := executor.Run(context.Background(), newExecution(func(e *Execution) {
+		e.TestCommand = "echo ok"
+	}), outputCh)
+
+	assert.Equal(t, 0, result.ExitCode)
+	assert.Empty(t, result.ErrorMessage)
+}
+
 // TestRun_ContextCancellation verifies the process is stopped when the parent
 // context is cancelled.
 func TestRun_ContextCancellation(t *testing.T) {

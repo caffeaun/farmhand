@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,8 +62,18 @@ func (f *fakeLogResultRepo) FindByJobID(jobID string) ([]db.JobResult, error) {
 
 // fakeLogCollector sends canned lines to the channel then stops.
 // It blocks until the context is cancelled or all lines have been sent.
+// Read returns the same canned lines as an io.ReadCloser.
 type fakeLogCollector struct {
 	lines []string
+}
+
+// Read returns all canned lines joined by newlines as an io.ReadCloser.
+func (f *fakeLogCollector) Read(jobID, deviceID string) (io.ReadCloser, error) {
+	content := strings.Join(f.lines, "\n")
+	if len(f.lines) > 0 {
+		content += "\n"
+	}
+	return io.NopCloser(strings.NewReader(content)), nil
 }
 
 func (f *fakeLogCollector) Tail(ctx context.Context, jobID, deviceID string, ch chan<- string) error {
@@ -80,7 +91,12 @@ func (f *fakeLogCollector) Tail(ctx context.Context, jobID, deviceID string, ch 
 }
 
 // blockingLogCollector never sends anything and blocks until context is done.
+// Read returns an empty reader.
 type blockingLogCollector struct{}
+
+func (b *blockingLogCollector) Read(jobID, deviceID string) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
 
 func (b *blockingLogCollector) Tail(ctx context.Context, jobID, deviceID string, ch chan<- string) error {
 	<-ctx.Done()
@@ -265,6 +281,40 @@ func TestStreamLogs_TerminalJobNoResults(t *testing.T) {
 	body := rec.Body.String()
 	assert.Contains(t, body, "event: done")
 	assert.Contains(t, body, "data: {}")
+}
+
+// TestStreamLogs_TerminalJobWithResults verifies that a completed job with
+// device results streams all log lines via Read (not Tail) and emits the done
+// event without requiring client disconnect. The handler must return quickly —
+// no hang.
+func TestStreamLogs_TerminalJobWithResults(t *testing.T) {
+	j := makeJob("job-completed", "completed")
+	jobRepo := newFakeLogJobRepo(j)
+	resultRepo := newFakeLogResultRepo()
+	resultRepo.add(db.JobResult{
+		ID:       "result-completed",
+		JobID:    "job-completed",
+		DeviceID: "device-1",
+		Status:   "passed",
+	})
+
+	lines := []string{"test started", "test passed", "all done"}
+	collector := &fakeLogCollector{lines: lines}
+
+	r := newLogTestRouter(jobRepo, resultRepo, collector)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-completed/logs", nil)
+	rec := httptest.NewRecorder()
+
+	// ServeHTTP must return on its own (no context cancellation needed).
+	r.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	for _, line := range lines {
+		assert.Contains(t, body, fmt.Sprintf("data: %s", line),
+			"log line %q should appear in SSE response", line)
+	}
+	assert.Contains(t, body, "event: done", "done event must be present")
+	assert.Contains(t, body, "data: {}", "done event payload must be present")
 }
 
 // TestStreamLogs_SendsLines verifies that log lines emitted by the collector
@@ -456,6 +506,147 @@ func TestJobStatus_FieldSubset(t *testing.T) {
 	assert.NotContains(t, body, "device_filter")
 	assert.NotContains(t, body, "artifact_path")
 	assert.NotContains(t, body, "timeout_minutes")
+}
+
+// ----------------------------------------------------------------------------
+// deviceLogs tests
+// ----------------------------------------------------------------------------
+
+// TestDeviceLogs_UnknownJob verifies that GET /api/v1/jobs/:id/logs/:device_id
+// returns HTTP 404 when the job does not exist.
+func TestDeviceLogs_UnknownJob(t *testing.T) {
+	jobRepo := newFakeLogJobRepo()
+	resultRepo := newFakeLogResultRepo()
+	collector := &blockingLogCollector{}
+
+	r := newLogTestRouter(jobRepo, resultRepo, collector)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/no-such-job/logs/device-1", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, "job not found", body["error"])
+}
+
+// TestDeviceLogs_UnknownDevice verifies that GET /api/v1/jobs/:id/logs/:device_id
+// returns HTTP 404 when the job exists but has no result row for the given device.
+func TestDeviceLogs_UnknownDevice(t *testing.T) {
+	j := makeJob("job-known", "completed")
+	jobRepo := newFakeLogJobRepo(j)
+	resultRepo := newFakeLogResultRepo()
+	// Add a result for a different device to ensure the filter is specific.
+	resultRepo.add(db.JobResult{
+		ID:       "result-other",
+		JobID:    "job-known",
+		DeviceID: "device-other",
+		Status:   "passed",
+	})
+	collector := &blockingLogCollector{}
+
+	r := newLogTestRouter(jobRepo, resultRepo, collector)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-known/logs/device-missing", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, "device log not found", body["error"])
+}
+
+// TestDeviceLogs_TerminalJob verifies that a completed job streams all log
+// lines for the specified device followed by the done event, without requiring
+// client disconnect.
+func TestDeviceLogs_TerminalJob(t *testing.T) {
+	j := makeJob("job-done-dev", "completed")
+	jobRepo := newFakeLogJobRepo(j)
+	resultRepo := newFakeLogResultRepo()
+	resultRepo.add(db.JobResult{
+		ID:       "result-dev-1",
+		JobID:    "job-done-dev",
+		DeviceID: "device-target",
+		Status:   "passed",
+	})
+
+	lines := []string{"start", "middle", "end"}
+	collector := &fakeLogCollector{lines: lines}
+
+	r := newLogTestRouter(jobRepo, resultRepo, collector)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-done-dev/logs/device-target", nil)
+	rec := httptest.NewRecorder()
+
+	// ServeHTTP must return on its own (terminal job — no context cancellation needed).
+	r.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	for _, line := range lines {
+		assert.Contains(t, body, fmt.Sprintf("data: %s", line),
+			"log line %q must appear in SSE body", line)
+	}
+	assert.Contains(t, body, "event: done", "done event must be present")
+	assert.Contains(t, body, "data: {}", "done event payload must be present")
+}
+
+// TestDeviceLogs_SSEHeaders verifies that the correct SSE response headers are
+// set for the per-device log endpoint.
+func TestDeviceLogs_SSEHeaders(t *testing.T) {
+	j := makeJob("job-hdr", "completed")
+	jobRepo := newFakeLogJobRepo(j)
+	resultRepo := newFakeLogResultRepo()
+	resultRepo.add(db.JobResult{
+		ID:       "result-hdr",
+		JobID:    "job-hdr",
+		DeviceID: "device-hdr",
+		Status:   "passed",
+	})
+	collector := &blockingLogCollector{}
+
+	r := newLogTestRouter(jobRepo, resultRepo, collector)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-hdr/logs/device-hdr", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	assert.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+	assert.Equal(t, "no-cache", rec.Header().Get("Cache-Control"))
+	assert.Equal(t, "keep-alive", rec.Header().Get("Connection"))
+	assert.Equal(t, "no", rec.Header().Get("X-Accel-Buffering"))
+}
+
+// TestDeviceLogs_RunningJob verifies that a running job streams live lines via
+// Tail and exits when the context is cancelled.
+func TestDeviceLogs_RunningJob(t *testing.T) {
+	j := makeJob("job-running-dev", "running")
+	jobRepo := newFakeLogJobRepo(j)
+	resultRepo := newFakeLogResultRepo()
+	resultRepo.add(db.JobResult{
+		ID:       "result-run-dev",
+		JobID:    "job-running-dev",
+		DeviceID: "device-run",
+		Status:   "running",
+	})
+
+	lines := []string{"line-a", "line-b", "line-c"}
+	collector := &fakeLogCollector{lines: lines}
+
+	r := newLogTestRouter(jobRepo, resultRepo, collector)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-running-dev/logs/device-run", nil).
+		WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	r.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	for _, line := range lines {
+		assert.Contains(t, body, fmt.Sprintf("data: %s", line))
+	}
 }
 
 // TestStreamLogs_MultilineSSE verifies that multiple log lines each produce

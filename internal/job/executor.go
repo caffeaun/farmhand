@@ -155,6 +155,7 @@ func (e *Executor) Run(ctx context.Context, execution Execution, outputCh chan<-
 	// Determine exit code and surface context errors clearly.
 	exitCode := 0
 	var runErr error
+	var errorMessage string
 
 	switch {
 	case waitErr == nil:
@@ -162,9 +163,11 @@ func (e *Executor) Run(ctx context.Context, execution Execution, outputCh chan<-
 	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
 		exitCode = -1
 		runErr = fmt.Errorf("execution timed out after %d minute(s)", execution.TimeoutMinutes)
+		errorMessage = runErr.Error()
 	case errors.Is(runCtx.Err(), context.Canceled):
 		exitCode = -1
 		runErr = fmt.Errorf("execution cancelled: %w", runCtx.Err())
+		errorMessage = runErr.Error()
 	default:
 		var exitErr *exec.ExitError
 		if errors.As(waitErr, &exitErr) {
@@ -175,6 +178,13 @@ func (e *Executor) Run(ctx context.Context, execution Execution, outputCh chan<-
 		}
 	}
 
+	// For non-zero exit codes that are not timeout/cancel, read the last 20
+	// lines of the log file as the error message. The read is safe because
+	// <-scanDone guarantees all writes are complete.
+	if exitCode != 0 && errorMessage == "" {
+		errorMessage = tailLogFile(logPath, 20, exitCode)
+	}
+
 	e.logger.Info().
 		Str("job_id", execution.JobID).
 		Str("device_id", execution.DeviceID).
@@ -183,9 +193,44 @@ func (e *Executor) Run(ctx context.Context, execution Execution, outputCh chan<-
 		Msg("execution finished")
 
 	return ExecResult{
-		ExitCode: exitCode,
-		Duration: time.Since(start),
-		LogPath:  logPath,
-		Error:    runErr,
+		ExitCode:     exitCode,
+		Duration:     time.Since(start),
+		LogPath:      logPath,
+		Error:        runErr,
+		ErrorMessage: errorMessage,
 	}
+}
+
+// tailLogFile opens the log file at path, reads all lines, and returns the
+// last n lines joined by newline. If the file is empty or cannot be read,
+// returns a fallback message including the exit code.
+func tailLogFile(path string, n, exitCode int) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Sprintf("command exited with code %d", exitCode)
+	}
+	defer f.Close() //nolint:errcheck
+
+	var lines []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+
+	if len(lines) == 0 {
+		return fmt.Sprintf("command exited with code %d", exitCode)
+	}
+
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+
+	result := ""
+	for i, line := range lines {
+		if i > 0 {
+			result += "\n"
+		}
+		result += line
+	}
+	return result
 }

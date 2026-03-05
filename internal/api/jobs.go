@@ -6,9 +6,9 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/gin-gonic/gin"
 	"github.com/caffeaun/farmhand/internal/db"
 	"github.com/caffeaun/farmhand/internal/job"
+	"github.com/gin-gonic/gin"
 )
 
 // jobRepoAPI is the consumer-side interface for db.JobRepository.
@@ -45,10 +45,64 @@ type CreateJobRequest struct {
 	TimeoutMinutes int             `json:"timeout_minutes"`
 }
 
-// jobWithResults is the response shape for GET /api/v1/jobs/:id.
-type jobWithResults struct {
-	db.Job
+// jobResponse is the DTO for a job in API responses. It mirrors db.Job but
+// replaces the DeviceFilter string with json.RawMessage so that device_filter
+// serializes as a JSON object (or null) rather than a quoted string.
+type jobResponse struct {
+	ID             string          `json:"id"`
+	Status         string          `json:"status"`
+	Strategy       string          `json:"strategy"`
+	TestCommand    string          `json:"test_command"`
+	DeviceFilter   json.RawMessage `json:"device_filter"`
+	ArtifactPath   string          `json:"artifact_path"`
+	TimeoutMinutes int             `json:"timeout_minutes"`
+	CreatedAt      interface{}     `json:"created_at"`
+	StartedAt      interface{}     `json:"started_at,omitempty"`
+	CompletedAt    interface{}     `json:"completed_at,omitempty"`
+}
+
+// jobWithResultsResponse is the response shape for GET /api/v1/jobs/:id.
+type jobWithResultsResponse struct {
+	jobResponse
 	Results []db.JobResult `json:"results"`
+}
+
+// toJobResponse converts a db.Job into a jobResponse DTO. When DeviceFilter
+// is empty or the literal "{}", the field is set to nil (serializes as null).
+// Otherwise the raw JSON string is preserved as json.RawMessage so that it
+// round-trips as an object rather than a quoted string.
+func toJobResponse(j db.Job) jobResponse {
+	var deviceFilter json.RawMessage
+	if j.DeviceFilter != "" && j.DeviceFilter != "{}" {
+		deviceFilter = json.RawMessage(j.DeviceFilter)
+	}
+
+	resp := jobResponse{
+		ID:             j.ID,
+		Status:         j.Status,
+		Strategy:       j.Strategy,
+		TestCommand:    j.TestCommand,
+		DeviceFilter:   deviceFilter,
+		ArtifactPath:   j.ArtifactPath,
+		TimeoutMinutes: j.TimeoutMinutes,
+		CreatedAt:      j.CreatedAt,
+	}
+	if j.StartedAt != nil {
+		resp.StartedAt = j.StartedAt
+	}
+	if j.CompletedAt != nil {
+		resp.CompletedAt = j.CompletedAt
+	}
+	return resp
+}
+
+// toJobResponses converts a slice of db.Job into a slice of jobResponse DTOs.
+func toJobResponses(jobs []db.Job) []jobResponse {
+	out := make([]jobResponse, len(jobs))
+	for i, j := range jobs {
+		out[i] = toJobResponse(j)
+	}
+	return out
 }
 
 // RegisterJobRoutes registers job CRUD endpoints on the given router group.
@@ -111,7 +165,7 @@ func createJob(jobRepo jobRepoAPI, scheduler jobSchedulerAPI, runner jobRunnerAP
 		// Launch the runner as a fire-and-forget goroutine.
 		go runner.Run(context.Background(), j, executions)
 
-		c.JSON(http.StatusCreated, j)
+		c.JSON(http.StatusCreated, toJobResponse(j))
 	}
 }
 
@@ -132,10 +186,11 @@ func listJobs(jobRepo jobRepoAPI) gin.HandlerFunc {
 
 		// Return an empty array rather than null when there are no results.
 		if jobs == nil {
-			jobs = []db.Job{}
+			c.JSON(http.StatusOK, []jobResponse{})
+			return
 		}
 
-		c.JSON(http.StatusOK, jobs)
+		c.JSON(http.StatusOK, toJobResponses(jobs))
 	}
 }
 
@@ -165,9 +220,9 @@ func getJob(jobRepo jobRepoAPI, resultRepo jobResultRepoAPI) gin.HandlerFunc {
 			results = []db.JobResult{}
 		}
 
-		c.JSON(http.StatusOK, jobWithResults{
-			Job:     j,
-			Results: results,
+		c.JSON(http.StatusOK, jobWithResultsResponse{
+			jobResponse: toJobResponse(j),
+			Results:     results,
 		})
 	}
 }

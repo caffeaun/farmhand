@@ -54,4 +54,9 @@ var Migrations = []Migration{
         CREATE INDEX IF NOT EXISTS idx_job_results_job_id ON job_results(job_id);
         CREATE INDEX IF NOT EXISTS idx_job_results_device_id ON job_results(device_id);`,
 	},
+	{
+		Version:     4,
+		Description: "Add error_message to job_results",
+		SQL:         `ALTER TABLE job_results ADD COLUMN error_message TEXT NOT NULL DEFAULT ''`,
+	},
 }

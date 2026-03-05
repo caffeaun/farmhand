@@ -427,3 +427,47 @@ func TestJobResultFindByID_NotFound(t *testing.T) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }
+
+func TestJobResultErrorMessage_RoundTrip(t *testing.T) {
+	db := openMemory(t)
+	jobRepo := NewJobRepository(db)
+	resultRepo := NewJobResultRepository(db)
+
+	insertTestDevice(t, db, "dev-errmsg-1")
+
+	j := newTestJob()
+	if err := jobRepo.Create(&j); err != nil {
+		t.Fatalf("Create job: %v", err)
+	}
+
+	wantErrorMessage := "command exited with code 1\nsome failure output"
+
+	jr := JobResult{
+		JobID:        j.ID,
+		DeviceID:     "dev-errmsg-1",
+		Status:       "failed",
+		ExitCode:     1,
+		Artifacts:    "[]",
+		ErrorMessage: wantErrorMessage,
+	}
+	if err := resultRepo.Create(&jr); err != nil {
+		t.Fatalf("Create job result: %v", err)
+	}
+	if jr.ID == "" {
+		t.Fatal("ID should be set after Create")
+	}
+
+	got, err := resultRepo.FindByID(jr.ID)
+	if err != nil {
+		t.Fatalf("FindByID: %v", err)
+	}
+	if got.ErrorMessage != wantErrorMessage {
+		t.Errorf("ErrorMessage = %q, want %q", got.ErrorMessage, wantErrorMessage)
+	}
+	if got.Status != "failed" {
+		t.Errorf("Status = %q, want failed", got.Status)
+	}
+	if got.ExitCode != 1 {
+		t.Errorf("ExitCode = %d, want 1", got.ExitCode)
+	}
+}

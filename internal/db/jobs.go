@@ -28,11 +28,12 @@ type JobResult struct {
 	ID              string    `json:"id"`
 	JobID           string    `json:"job_id"`
 	DeviceID        string    `json:"device_id"`
-	Status          string    `json:"status"`     // pending, passed, failed, error, skipped
+	Status          string    `json:"status"`          // pending, passed, failed, error, skipped
 	ExitCode        int       `json:"exit_code"`
 	DurationSeconds int       `json:"duration_seconds"`
 	LogPath         string    `json:"log_path"`
-	Artifacts       string    `json:"artifacts"` // JSON array string
+	Artifacts       string    `json:"artifacts"`       // JSON array string
+	ErrorMessage    string    `json:"error_message"`
 	CreatedAt       time.Time `json:"created_at"`
 }
 
@@ -256,8 +257,8 @@ func (r *JobResultRepository) Create(jr *JobResult) error {
 	jr.CreatedAt = time.Now().UTC()
 
 	const query = `INSERT INTO job_results
-		(id, job_id, device_id, status, exit_code, duration_seconds, log_path, artifacts, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		(id, job_id, device_id, status, exit_code, duration_seconds, log_path, artifacts, error_message, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err := r.db.Exec(query,
 		jr.ID,
@@ -268,6 +269,7 @@ func (r *JobResultRepository) Create(jr *JobResult) error {
 		jr.DurationSeconds,
 		jr.LogPath,
 		jr.Artifacts,
+		jr.ErrorMessage,
 		jr.CreatedAt,
 	)
 	if err != nil {
@@ -278,7 +280,7 @@ func (r *JobResultRepository) Create(jr *JobResult) error {
 
 // FindByJobID returns all results for a given job.
 func (r *JobResultRepository) FindByJobID(jobID string) ([]JobResult, error) {
-	const query = `SELECT id, job_id, device_id, status, exit_code, duration_seconds, log_path, artifacts, created_at
+	const query = `SELECT id, job_id, device_id, status, exit_code, duration_seconds, log_path, artifacts, error_message, created_at
 		FROM job_results WHERE job_id = ?`
 
 	rows, err := r.db.Query(query, jobID)
@@ -304,7 +306,7 @@ func (r *JobResultRepository) FindByJobID(jobID string) ([]JobResult, error) {
 
 // FindByID retrieves a single job result by ID. Returns ErrNotFound if not found.
 func (r *JobResultRepository) FindByID(id string) (JobResult, error) {
-	const query = `SELECT id, job_id, device_id, status, exit_code, duration_seconds, log_path, artifacts, created_at
+	const query = `SELECT id, job_id, device_id, status, exit_code, duration_seconds, log_path, artifacts, error_message, created_at
 		FROM job_results WHERE id = ?`
 
 	row := r.db.QueryRow(query, id)
@@ -319,6 +321,8 @@ func (r *JobResultRepository) FindByID(id string) (JobResult, error) {
 }
 
 // scanJobResult scans a job result from a row or rows result.
+// Column order must match the SELECT list: id, job_id, device_id, status,
+// exit_code, duration_seconds, log_path, artifacts, error_message, created_at.
 func scanJobResult(s scanner) (JobResult, error) {
 	var jr JobResult
 	var createdAt sql.NullTime
@@ -332,6 +336,7 @@ func scanJobResult(s scanner) (JobResult, error) {
 		&jr.DurationSeconds,
 		&jr.LogPath,
 		&jr.Artifacts,
+		&jr.ErrorMessage,
 		&createdAt,
 	)
 	if err != nil {

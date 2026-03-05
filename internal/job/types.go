@@ -16,10 +16,11 @@ type Execution struct {
 
 // ExecResult represents the outcome of a single execution.
 type ExecResult struct {
-	ExitCode int
-	Duration time.Duration
-	LogPath  string
-	Error    error
+	ExitCode     int
+	Duration     time.Duration
+	LogPath      string
+	Error        error
+	ErrorMessage string // human-readable failure summary; empty on success
 }
 
 // DeviceFilter defines criteria for selecting target devices.

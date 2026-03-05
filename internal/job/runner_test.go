@@ -564,6 +564,79 @@ func TestRunner_NotifierFailureDoesNotBlock(t *testing.T) {
 	}
 }
 
+// TestRunner_ErrorMessage_PersistedOnFailure verifies that ErrorMessage from
+// the executor is stored in the persisted JobResult when the command fails.
+func TestRunner_ErrorMessage_PersistedOnFailure(t *testing.T) {
+	t.Parallel()
+
+	fakeExec := newFakeExecutor()
+	fakeExec.setResult("dev-err", ExecResult{
+		ExitCode:     1,
+		Duration:     10 * time.Millisecond,
+		ErrorMessage: "test failure: assertion failed on line 42",
+	})
+
+	fakeJob := &fakeJobRepo{}
+	fakeResults := &fakeResultRepo{}
+	fakeDevices := newFakeDeviceRepo()
+	fakeArtifacts := &fakeArtifactCollector{}
+	fakeNotify := &fakeNotifier{}
+	fakeBus := &fakeEventBus{}
+
+	runner := newTestRunner(fakeExec, fakeJob, fakeResults, fakeDevices, fakeArtifacts, fakeNotify, fakeBus)
+
+	job := makeJob("job-err", "")
+	execs := []*Execution{makeExecution("job-err", "dev-err")}
+
+	runner.Run(context.Background(), job, execs)
+
+	res := fakeResults.findByDevice("dev-err")
+	if res == nil {
+		t.Fatal("expected a result for dev-err, got none")
+	}
+	if res.Status != "failed" {
+		t.Errorf("result status = %q, want failed", res.Status)
+	}
+	if res.ErrorMessage == "" {
+		t.Error("expected ErrorMessage to be non-empty, got empty string")
+	}
+	if res.ErrorMessage != "test failure: assertion failed on line 42" {
+		t.Errorf("ErrorMessage = %q, want %q", res.ErrorMessage, "test failure: assertion failed on line 42")
+	}
+}
+
+// TestRunner_ErrorMessage_EmptyOnSuccess verifies that ErrorMessage is empty
+// when the execution passes.
+func TestRunner_ErrorMessage_EmptyOnSuccess(t *testing.T) {
+	t.Parallel()
+
+	fakeExec := newFakeExecutor()
+	fakeExec.setResult("dev-ok", ExecResult{
+		ExitCode:     0,
+		Duration:     5 * time.Millisecond,
+		ErrorMessage: "",
+	})
+
+	fakeJob := &fakeJobRepo{}
+	fakeResults := &fakeResultRepo{}
+	fakeDevices := newFakeDeviceRepo()
+
+	runner := newTestRunner(fakeExec, fakeJob, fakeResults, fakeDevices, &fakeArtifactCollector{}, &fakeNotifier{}, &fakeEventBus{})
+
+	job := makeJob("job-ok-err", "")
+	execs := []*Execution{makeExecution("job-ok-err", "dev-ok")}
+
+	runner.Run(context.Background(), job, execs)
+
+	res := fakeResults.findByDevice("dev-ok")
+	if res == nil {
+		t.Fatal("expected a result for dev-ok, got none")
+	}
+	if res.ErrorMessage != "" {
+		t.Errorf("ErrorMessage = %q, want empty string", res.ErrorMessage)
+	}
+}
+
 // TestRunner_AllPassed_JobCompleted verifies the 'all passed → completed'
 // aggregation rule with two passing devices.
 func TestRunner_AllPassed_JobCompleted(t *testing.T) {

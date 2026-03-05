@@ -214,6 +214,12 @@ func (r *Runner) runOne(ctx context.Context, job db.Job, ex *Execution) (result 
 		}
 	}
 
+	// Propagate the error message only for failed/error statuses.
+	var errorMessage string
+	if resultStatus == "failed" || resultStatus == "error" {
+		errorMessage = execResult.ErrorMessage
+	}
+
 	result = db.JobResult{
 		JobID:           ex.JobID,
 		DeviceID:        ex.DeviceID,
@@ -222,6 +228,7 @@ func (r *Runner) runOne(ctx context.Context, job db.Job, ex *Execution) (result 
 		DurationSeconds: int(execResult.Duration.Seconds()),
 		LogPath:         execResult.LogPath,
 		Artifacts:       artifactsJSON,
+		ErrorMessage:    errorMessage,
 	}
 
 	// Persist the result.
