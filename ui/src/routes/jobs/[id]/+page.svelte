@@ -16,6 +16,9 @@
 	let artifactsLoading = $state(true);
 	let artifactsError = $state<string | null>(null);
 
+	// ─── Device filter state ─────────────────────────────────────────────────────
+	let selectedDevice = $state<string | null>(null);
+
 	// ─── Log viewer state ────────────────────────────────────────────────────────
 	let logLines = $state<string[]>([]);
 	let logComplete = $state(false);
@@ -58,7 +61,7 @@
 	// Track the active EventSource so we can close it on retry or unmount
 	let activeEventSource: EventSource | null = null;
 
-	function connectSSE(id: string) {
+	function connectSSE(id: string, deviceId: string | null = null) {
 		// Close any existing connection before creating a new one
 		activeEventSource?.close();
 
@@ -69,7 +72,10 @@
 
 		const token = typeof localStorage !== 'undefined' ? localStorage.getItem(TOKEN_KEY) : null;
 		const qs = token ? `?token=${encodeURIComponent(token)}` : '';
-		const es = new EventSource(`/api/v1/jobs/${id}/logs${qs}`);
+		const logPath = deviceId
+			? `/api/v1/jobs/${id}/logs/${encodeURIComponent(deviceId)}`
+			: `/api/v1/jobs/${id}/logs`;
+		const es = new EventSource(`${logPath}${qs}`);
 		activeEventSource = es;
 
 		es.onopen = () => {
@@ -133,9 +139,13 @@
 		isAtBottom = true;
 	}
 
+	function selectDevice(deviceId: string | null) {
+		selectedDevice = deviceId;
+		connectSSE(jobId, deviceId);
+	}
+
 	function retrySSE() {
-		// Re-connect SSE; connectSSE closes the previous connection internally
-		connectSSE(jobId);
+		connectSSE(jobId, selectedDevice);
 	}
 
 	// ─── Utility: status badge styles ────────────────────────────────────────────
@@ -279,8 +289,36 @@
 		{:else if job && job.results.length === 0}
 			<p class="text-sm text-gray-500">No device results yet.</p>
 		{:else if job}
-			<div class="flex flex-col gap-3">
+			<!-- Device tabs -->
+			<div class="mb-3 flex flex-wrap gap-2">
+				<button
+					onclick={() => selectDevice(null)}
+					class="rounded-lg px-3 py-1.5 text-xs font-medium transition-colors {selectedDevice === null
+						? 'bg-blue-600 text-white'
+						: 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'}"
+				>
+					All devices
+				</button>
 				{#each job.results as result (result.id)}
+					<button
+						onclick={() => selectDevice(result.device_id)}
+						class="flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium font-mono transition-colors {selectedDevice === result.device_id
+							? 'bg-blue-600 text-white'
+							: 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'}"
+					>
+						{result.device_id}
+						<span
+							class="rounded px-1.5 py-0.5 text-[10px] capitalize {resultStatusStyles[result.status]}"
+						>
+							{result.status}
+						</span>
+					</button>
+				{/each}
+			</div>
+
+			<!-- Device result cards -->
+			<div class="flex flex-col gap-3">
+				{#each job.results.filter((r) => selectedDevice === null || r.device_id === selectedDevice) as result (result.id)}
 					<div class="rounded-lg border border-gray-800 bg-gray-900">
 						<!-- Card header -->
 						<div class="flex items-center justify-between border-b border-gray-800 px-4 py-3">
@@ -322,7 +360,13 @@
 	<!-- ─── Log viewer (SSE streaming) ───────────────────────────────────────── -->
 	<section aria-labelledby="logs-heading" class="mb-8">
 		<div class="mb-3 flex items-center justify-between">
-			<h2 id="logs-heading" class="text-sm font-medium text-gray-400">Live logs</h2>
+			<h2 id="logs-heading" class="text-sm font-medium text-gray-400">
+				{#if selectedDevice}
+					Logs — <span class="font-mono">{selectedDevice}</span>
+				{:else}
+					Live logs
+				{/if}
+			</h2>
 			<div class="flex items-center gap-2">
 				{#if sseConnected && !logComplete}
 					<span class="flex items-center gap-1.5 text-xs text-blue-400">
