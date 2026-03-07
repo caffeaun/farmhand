@@ -109,7 +109,8 @@ All protected endpoints require `Authorization: Bearer <token>`. The base path i
 | `GET` | `/api/v1/jobs/:id` | Get a job with per-device results |
 | `DELETE` | `/api/v1/jobs/:id` | Cancel a job |
 | `GET` | `/api/v1/jobs/:id/status` | Lightweight status poll |
-| `GET` | `/api/v1/jobs/:id/logs` | SSE log stream (`text/event-stream`) |
+| `GET` | `/api/v1/jobs/:id/logs` | SSE log stream — all devices (`text/event-stream`) |
+| `GET` | `/api/v1/jobs/:id/logs/:device_id` | SSE log stream — single device |
 | `GET` | `/api/v1/jobs/:id/artifacts` | List job artifacts |
 | `GET` | `/api/v1/jobs/:id/artifacts/*filepath` | Download an artifact file |
 | `GET` | `/api/v1/config` | Running configuration (auth_token masked) |
@@ -168,7 +169,7 @@ The web dashboard is served at the root URL when running `farmhand serve`. It is
 |------|-----|-------------|
 | Devices | `/devices` | Device inventory with status, battery, wake/reboot actions |
 | Jobs | `/jobs` | Job list with status filter tabs and job creation panel |
-| Job detail | `/jobs/:id` | Job results, live log viewer, artifact downloads |
+| Job detail | `/jobs/:id` | Job results with per-device log switching, live log viewer, artifact downloads |
 | Settings | `/settings` | Configure the bearer token for the browser session |
 
 The dashboard connects to the WebSocket endpoint on page load. Device status and job status are updated in real time without polling.
