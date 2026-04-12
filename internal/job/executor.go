@@ -67,6 +67,14 @@ func (e *Executor) Run(ctx context.Context, execution Execution, outputCh chan<-
 		defer cancel()
 	}
 
+	// Run install_command first, if specified.
+	if execution.InstallCommand != "" {
+		installResult := e.runInstall(runCtx, execution, logPath, start)
+		if installResult != nil {
+			return *installResult
+		}
+	}
+
 	// Build command: /bin/sh -c "<test_command>"
 	cmd := exec.CommandContext(runCtx, "/bin/sh", "-c", execution.TestCommand)
 
@@ -107,8 +115,8 @@ func (e *Executor) Run(ctx context.Context, execution Execution, outputCh chan<-
 	cmd.Stdout = pw
 	cmd.Stderr = pw
 
-	// Open log file.
-	logFile, err := os.Create(logPath)
+	// Open log file. Use O_APPEND so install_command output is preserved.
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return ExecResult{
 			ExitCode: -1,
@@ -199,6 +207,117 @@ func (e *Executor) Run(ctx context.Context, execution Execution, outputCh chan<-
 		Error:        runErr,
 		ErrorMessage: errorMessage,
 	}
+}
+
+// runInstall runs the install_command before the test_command. Output is
+// written to the same per-device log file. Returns a non-nil ExecResult if
+// the install failed (caller should return it and skip test_command).
+// Returns nil on success.
+func (e *Executor) runInstall(ctx context.Context, execution Execution, logPath string, start time.Time) *ExecResult {
+	e.logger.Info().
+		Str("job_id", execution.JobID).
+		Str("device_id", execution.DeviceID).
+		Msg("running install_command")
+
+	// Open the log file in append mode (it was already created by the caller).
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return &ExecResult{
+			ExitCode:     -1,
+			Duration:     time.Since(start),
+			LogPath:      logPath,
+			Error:        fmt.Errorf("open log for install: %w", err),
+			ErrorMessage: fmt.Sprintf("open log for install: %v", err),
+		}
+	}
+
+	_, _ = fmt.Fprintln(logFile, "=== install_command ===")
+
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", execution.InstallCommand)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+
+	// Use the same workspace as the test_command.
+	workspaceDir := filepath.Join(os.TempDir(), "farmhand", execution.JobID, execution.DeviceID)
+	cmd.Dir = workspaceDir
+
+	// Same environment as test_command.
+	cmd.Env = os.Environ()
+	cmd.Env = append(cmd.Env,
+		"FARMHAND_DEVICE_ID="+execution.DeviceID,
+		"FARMHAND_DEVICE_SERIAL="+execution.DeviceSerial,
+		"FARMHAND_DEVICE_PLATFORM="+execution.DevicePlatform,
+		"FARMHAND_JOB_ID="+execution.JobID,
+		"FARMHAND_WORKSPACE="+workspaceDir,
+	)
+	for k, v := range execution.Env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+
+	// Capture output to log file.
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+
+	scanDone := make(chan struct{})
+	go func() {
+		defer close(scanDone)
+		scanner := bufio.NewScanner(pr)
+		for scanner.Scan() {
+			_, _ = fmt.Fprintln(logFile, scanner.Text())
+		}
+	}()
+
+	if err := cmd.Start(); err != nil {
+		pw.Close()
+		<-scanDone
+		logFile.Close()
+		return &ExecResult{
+			ExitCode:     -1,
+			Duration:     time.Since(start),
+			LogPath:      logPath,
+			Error:        fmt.Errorf("start install_command: %w", err),
+			ErrorMessage: fmt.Sprintf("install_command failed to start: %v", err),
+		}
+	}
+
+	waitErr := cmd.Wait()
+	pw.Close()
+	<-scanDone
+	_, _ = fmt.Fprintln(logFile, "=== end install_command ===")
+	logFile.Close()
+
+	if waitErr != nil {
+		exitCode := -1
+		var exitErr *exec.ExitError
+		if errors.As(waitErr, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+		errorMessage := tailLogFile(logPath, 20, exitCode)
+
+		e.logger.Warn().
+			Str("job_id", execution.JobID).
+			Str("device_id", execution.DeviceID).
+			Int("exit_code", exitCode).
+			Msg("install_command failed")
+
+		return &ExecResult{
+			ExitCode:     exitCode,
+			Duration:     time.Since(start),
+			LogPath:      logPath,
+			Error:        fmt.Errorf("install_command failed: %w", waitErr),
+			ErrorMessage: errorMessage,
+		}
+	}
+
+	e.logger.Info().
+		Str("job_id", execution.JobID).
+		Str("device_id", execution.DeviceID).
+		Msg("install_command succeeded")
+
+	return nil
 }
 
 // tailLogFile opens the log file at path, reads all lines, and returns the

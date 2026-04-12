@@ -15,6 +15,7 @@ type Job struct {
 	Status         string     `json:"status"`          // queued, preparing, installing, running, completed, failed, cancelled
 	Strategy       string     `json:"strategy"`        // fan-out (only supported in MVP)
 	TestCommand    string     `json:"test_command"`
+	InstallCommand string     `json:"install_command"`
 	DeviceFilter   string     `json:"device_filter"`   // JSON string
 	ArtifactPath   string     `json:"artifact_path"`
 	TimeoutMinutes int        `json:"timeout_minutes"`
@@ -59,14 +60,15 @@ func (r *JobRepository) Create(j *Job) error {
 	j.CreatedAt = time.Now().UTC()
 
 	const query = `INSERT INTO jobs
-		(id, status, strategy, test_command, device_filter, artifact_path, timeout_minutes, created_at, started_at, completed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		(id, status, strategy, test_command, install_command, device_filter, artifact_path, timeout_minutes, created_at, started_at, completed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err := r.db.Exec(query,
 		j.ID,
 		j.Status,
 		j.Strategy,
 		j.TestCommand,
+		j.InstallCommand,
 		j.DeviceFilter,
 		j.ArtifactPath,
 		j.TimeoutMinutes,
@@ -82,7 +84,7 @@ func (r *JobRepository) Create(j *Job) error {
 
 // FindByID retrieves a job by ID. Returns ErrNotFound if not found.
 func (r *JobRepository) FindByID(id string) (Job, error) {
-	const query = `SELECT id, status, strategy, test_command, device_filter, artifact_path, timeout_minutes, created_at, started_at, completed_at
+	const query = `SELECT id, status, strategy, test_command, install_command, device_filter, artifact_path, timeout_minutes, created_at, started_at, completed_at
 		FROM jobs WHERE id = ?`
 
 	row := r.db.QueryRow(query, id)
@@ -99,7 +101,7 @@ func (r *JobRepository) FindByID(id string) (Job, error) {
 // FindAll returns jobs matching the filter, sorted by created_at DESC.
 // If filter.Limit > 0, limits the number of results returned.
 func (r *JobRepository) FindAll(filter JobFilter) ([]Job, error) {
-	query := `SELECT id, status, strategy, test_command, device_filter, artifact_path, timeout_minutes, created_at, started_at, completed_at
+	query := `SELECT id, status, strategy, test_command, install_command, device_filter, artifact_path, timeout_minutes, created_at, started_at, completed_at
 		FROM jobs WHERE 1=1`
 	args := make([]any, 0)
 
@@ -217,6 +219,7 @@ func scanJob(s scanner) (Job, error) {
 		&j.Status,
 		&j.Strategy,
 		&j.TestCommand,
+		&j.InstallCommand,
 		&j.DeviceFilter,
 		&j.ArtifactPath,
 		&j.TimeoutMinutes,

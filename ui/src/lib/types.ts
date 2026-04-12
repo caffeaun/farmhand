@@ -29,6 +29,7 @@ export type JobStatus = 'queued' | 'running' | 'completed' | 'failed';
 export interface Job {
 	id: string;
 	test_command: string;
+	install_command?: string;
 	device_filter: DeviceFilter | null;
 	status: JobStatus;
 	timeout_minutes: number;
@@ -109,6 +110,7 @@ export interface JobFilter {
 
 export interface CreateJobRequest {
 	test_command: string;
+	install_command?: string;
 	device_filter?: DeviceFilter;
 	timeout_minutes?: number;
 }

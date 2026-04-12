@@ -114,12 +114,12 @@ func TestRunMigrations_Idempotent(t *testing.T) {
 		t.Fatalf("second RunMigrations: %v", err)
 	}
 
-	// Open() auto-applies Migrations (versions 1-4), plus testMigrations (101, 102) = 6 rows total
+	// Open() auto-applies Migrations (versions 1-5), plus testMigrations (101, 102) = 7 rows total
 	var count int
 	if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 6 {
-		t.Errorf("schema_migrations rows = %d, want 6", count)
+	if count != 7 {
+		t.Errorf("schema_migrations rows = %d, want 7", count)
 	}
 }

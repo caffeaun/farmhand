@@ -23,6 +23,7 @@ type runDeviceFilter struct {
 // runCreateJobRequest is the JSON body for POST /api/v1/jobs.
 type runCreateJobRequest struct {
 	TestCommand    string          `json:"test_command"`
+	InstallCommand string          `json:"install_command,omitempty"`
 	DeviceFilter   runDeviceFilter `json:"device_filter"`
 	TimeoutMinutes int             `json:"timeout_minutes"`
 }
@@ -53,6 +54,7 @@ func init() {
 	runCmd.Flags().String("server", "http://localhost:8080", "FarmHand server base URL")
 	runCmd.Flags().String("token", "", "bearer authentication token")
 	runCmd.Flags().String("command", "", "test command to run on the device (required)")
+	runCmd.Flags().String("install", "", "install command to run before the test command (optional)")
 	runCmd.Flags().String("platform", "", "device platform filter (android or ios)")
 	runCmd.Flags().StringSlice("tags", nil, "device tag filters (comma-separated or multiple flags)")
 	runCmd.Flags().Int("timeout", 30, "job timeout in minutes")
@@ -69,6 +71,7 @@ func runJobCmd(cmd *cobra.Command, _ []string) error {
 	server, _ := cmd.Flags().GetString("server")
 	token, _ := cmd.Flags().GetString("token")
 	command, _ := cmd.Flags().GetString("command")
+	install, _ := cmd.Flags().GetString("install")
 	platform, _ := cmd.Flags().GetString("platform")
 	tags, _ := cmd.Flags().GetStringSlice("tags")
 	timeoutMinutes, _ := cmd.Flags().GetInt("timeout")
@@ -79,7 +82,7 @@ func runJobCmd(cmd *cobra.Command, _ []string) error {
 		token = os.Getenv("FARMHAND_TOKEN")
 	}
 
-	jobID, err := doSubmitJob(server, token, command, platform, tags, timeoutMinutes)
+	jobID, err := doSubmitJob(server, token, command, install, platform, tags, timeoutMinutes)
 	if err != nil {
 		return fmt.Errorf("submitting job: %w", err)
 	}
@@ -112,9 +115,10 @@ func runJobCmd(cmd *cobra.Command, _ []string) error {
 }
 
 // doSubmitJob sends POST /api/v1/jobs and returns the new job ID on success.
-func doSubmitJob(server, token, command, platform string, tags []string, timeoutMinutes int) (string, error) {
+func doSubmitJob(server, token, command, install, platform string, tags []string, timeoutMinutes int) (string, error) {
 	reqBody := runCreateJobRequest{
-		TestCommand: command,
+		TestCommand:    command,
+		InstallCommand: install,
 		DeviceFilter: runDeviceFilter{
 			Platform: platform,
 			Tags:     tags,

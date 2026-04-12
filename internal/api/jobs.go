@@ -39,6 +39,7 @@ type jobRunnerAPI interface {
 type CreateJobRequest struct {
 	// TestCommand is required — the shell command to run on each device.
 	TestCommand    string          `json:"test_command" binding:"required"`
+	InstallCommand string          `json:"install_command"`
 	Strategy       string          `json:"strategy"`
 	DeviceFilter   json.RawMessage `json:"device_filter"`
 	ArtifactPath   string          `json:"artifact_path"`
@@ -53,6 +54,7 @@ type jobResponse struct {
 	Status         string          `json:"status"`
 	Strategy       string          `json:"strategy"`
 	TestCommand    string          `json:"test_command"`
+	InstallCommand string          `json:"install_command,omitempty"`
 	DeviceFilter   json.RawMessage `json:"device_filter"`
 	ArtifactPath   string          `json:"artifact_path"`
 	TimeoutMinutes int             `json:"timeout_minutes"`
@@ -82,6 +84,7 @@ func toJobResponse(j db.Job) jobResponse {
 		Status:         j.Status,
 		Strategy:       j.Strategy,
 		TestCommand:    j.TestCommand,
+		InstallCommand: j.InstallCommand,
 		DeviceFilter:   deviceFilter,
 		ArtifactPath:   j.ArtifactPath,
 		TimeoutMinutes: j.TimeoutMinutes,
@@ -144,6 +147,7 @@ func createJob(jobRepo jobRepoAPI, scheduler jobSchedulerAPI, runner jobRunnerAP
 			Status:         "queued",
 			Strategy:       req.Strategy,
 			TestCommand:    req.TestCommand,
+			InstallCommand: req.InstallCommand,
 			DeviceFilter:   deviceFilter,
 			ArtifactPath:   req.ArtifactPath,
 			TimeoutMinutes: req.TimeoutMinutes,

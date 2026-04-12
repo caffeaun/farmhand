@@ -463,3 +463,52 @@ func TestSchedule_ConcurrentSafety(t *testing.T) {
 		t.Errorf("expected at least one Schedule to succeed, both failed: %v, %v", errs[0], errs[1])
 	}
 }
+
+// TestSchedule_InstallCommand_CopiedToExecutions verifies that
+// InstallCommand is propagated from the job to each Execution.
+func TestSchedule_InstallCommand_CopiedToExecutions(t *testing.T) {
+	database := openTestDB(t)
+	deviceRepo := db.NewDeviceRepository(database)
+	jobRepo := db.NewJobRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	// Seed two online devices.
+	if err := deviceRepo.Upsert(makeOnlineDevice("dev-a", "android")); err != nil {
+		t.Fatalf("upsert dev-a: %v", err)
+	}
+	if err := deviceRepo.Upsert(makeOnlineDevice("dev-b", "android")); err != nil {
+		t.Fatalf("upsert dev-b: %v", err)
+	}
+
+	s := NewScheduler(&fakeDeviceManager{repo: deviceRepo}, jobRepo, deviceRepo, bus,
+		zerolog.New(zerolog.NewTestWriter(t)))
+
+	j := db.Job{
+		Status:         "queued",
+		Strategy:       "fan-out",
+		TestCommand:    "echo test",
+		InstallCommand: "adb install -r /tmp/app.apk",
+		DeviceFilter:   "{}",
+		TimeoutMinutes: 10,
+	}
+	if err := jobRepo.Create(&j); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	executions, err := s.Schedule(j)
+	if err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+
+	if len(executions) != 2 {
+		t.Fatalf("expected 2 executions, got %d", len(executions))
+	}
+
+	for _, ex := range executions {
+		if ex.InstallCommand != "adb install -r /tmp/app.apk" {
+			t.Errorf("execution for %s: InstallCommand = %q, want %q",
+				ex.DeviceID, ex.InstallCommand, "adb install -r /tmp/app.apk")
+		}
+	}
+}

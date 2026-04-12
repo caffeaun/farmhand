@@ -689,3 +689,75 @@ func TestDeleteJob_NotFound(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	assert.Contains(t, body, "error")
 }
+
+// --------------------------------------------------------------------------
+// install_command
+// --------------------------------------------------------------------------
+
+// TestCreateJob_WithInstallCommand verifies that install_command is accepted
+// and returned in the response.
+func TestCreateJob_WithInstallCommand(t *testing.T) {
+	jobRepo := &fakeJobRepo{}
+	scheduler := &fakeScheduler{
+		executions: []*job.Execution{{JobID: "test", DeviceID: "d1"}},
+	}
+	r := newJobsRouter(jobRepo, &fakeJobResultRepo{}, scheduler, &fakeRunner{})
+
+	rec := doJSONRequest(r, http.MethodPost, "/api/v1/jobs", map[string]interface{}{
+		"test_command":    "adb shell am instrument",
+		"install_command": "adb install -r /tmp/app.apk",
+	})
+
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var body jobResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, "adb install -r /tmp/app.apk", body.InstallCommand)
+	assert.Equal(t, "adb shell am instrument", body.TestCommand)
+}
+
+// TestCreateJob_WithoutInstallCommand verifies backward compatibility —
+// install_command is omitted from response when empty.
+func TestCreateJob_WithoutInstallCommand(t *testing.T) {
+	jobRepo := &fakeJobRepo{}
+	scheduler := &fakeScheduler{
+		executions: []*job.Execution{{JobID: "test", DeviceID: "d1"}},
+	}
+	r := newJobsRouter(jobRepo, &fakeJobResultRepo{}, scheduler, &fakeRunner{})
+
+	rec := doJSONRequest(r, http.MethodPost, "/api/v1/jobs", map[string]interface{}{
+		"test_command": "echo hello",
+	})
+
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var raw map[string]interface{}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &raw))
+	// install_command should be omitted (omitempty) when empty
+	_, exists := raw["install_command"]
+	assert.False(t, exists, "install_command should be omitted when empty")
+}
+
+// TestGetJob_InstallCommand verifies that install_command is included in the
+// GET /jobs/:id response.
+func TestGetJob_InstallCommand(t *testing.T) {
+	jobRepo := &fakeJobRepo{}
+	resultRepo := &fakeJobResultRepo{}
+
+	// Create a job with install_command
+	j := &db.Job{
+		Status:         "queued",
+		TestCommand:    "echo test",
+		InstallCommand: "curl -o /tmp/app.apk https://example.com/app.apk",
+	}
+	_ = jobRepo.Create(j)
+
+	r := newJobsRouter(jobRepo, resultRepo, &fakeScheduler{}, &fakeRunner{})
+	rec := doJSONRequest(r, http.MethodGet, "/api/v1/jobs/"+j.ID, nil)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, "curl -o /tmp/app.apk https://example.com/app.apk", body["install_command"])
+}

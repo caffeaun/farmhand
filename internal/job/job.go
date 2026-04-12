@@ -118,6 +118,7 @@ func (s *Scheduler) Schedule(job db.Job) ([]*Execution, error) {
 			DeviceSerial:   d.ID, // serial == DB ID for ADB/xcrun devices
 			DevicePlatform: d.Platform,
 			TestCommand:    job.TestCommand,
+			InstallCommand: job.InstallCommand,
 			TimeoutMinutes: job.TimeoutMinutes,
 		})
 	}

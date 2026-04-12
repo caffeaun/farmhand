@@ -252,6 +252,134 @@ func TestRun_ErrorMessage_Success(t *testing.T) {
 	assert.Empty(t, result.ErrorMessage)
 }
 
+// --------------------------------------------------------------------------
+// install_command tests
+// --------------------------------------------------------------------------
+
+// TestRun_InstallCommand_Success verifies that install_command runs before
+// test_command and both outputs appear in the log.
+func TestRun_InstallCommand_Success(t *testing.T) {
+	executor, _ := newTestExecutor(t)
+	outputCh := make(chan string, 64)
+
+	exec := newExecution(func(e *Execution) {
+		e.InstallCommand = "echo installing-artifact"
+		e.TestCommand = "echo running-test"
+	})
+
+	result := executor.Run(context.Background(), exec, outputCh)
+
+	assert.Equal(t, 0, result.ExitCode)
+	assert.NoError(t, result.Error)
+
+	data, err := os.ReadFile(result.LogPath)
+	require.NoError(t, err)
+	log := string(data)
+
+	assert.Contains(t, log, "=== install_command ===")
+	assert.Contains(t, log, "installing-artifact")
+	assert.Contains(t, log, "=== end install_command ===")
+	assert.Contains(t, log, "running-test")
+
+	// install_command output should appear before test_command output
+	installPos := strings.Index(log, "installing-artifact")
+	testPos := strings.Index(log, "running-test")
+	assert.Less(t, installPos, testPos, "install output should appear before test output")
+}
+
+// TestRun_InstallCommand_Failure verifies that when install_command fails,
+// test_command is skipped and the result reflects the install failure.
+func TestRun_InstallCommand_Failure(t *testing.T) {
+	executor, _ := newTestExecutor(t)
+	outputCh := make(chan string, 64)
+
+	exec := newExecution(func(e *Execution) {
+		e.InstallCommand = "echo install-failed && exit 1"
+		e.TestCommand = "echo should-not-run"
+	})
+
+	result := executor.Run(context.Background(), exec, outputCh)
+
+	assert.Equal(t, 1, result.ExitCode)
+	assert.Error(t, result.Error)
+	assert.Contains(t, result.Error.Error(), "install_command failed")
+
+	data, err := os.ReadFile(result.LogPath)
+	require.NoError(t, err)
+	log := string(data)
+
+	assert.Contains(t, log, "install-failed")
+	assert.NotContains(t, log, "should-not-run", "test_command must be skipped on install failure")
+}
+
+// TestRun_InstallCommand_Empty verifies backward compatibility — empty
+// install_command means only test_command runs.
+func TestRun_InstallCommand_Empty(t *testing.T) {
+	executor, _ := newTestExecutor(t)
+	outputCh := make(chan string, 16)
+
+	exec := newExecution(func(e *Execution) {
+		e.InstallCommand = ""
+		e.TestCommand = "echo only-test"
+	})
+
+	result := executor.Run(context.Background(), exec, outputCh)
+
+	assert.Equal(t, 0, result.ExitCode)
+
+	data, err := os.ReadFile(result.LogPath)
+	require.NoError(t, err)
+	log := string(data)
+
+	assert.NotContains(t, log, "=== install_command ===", "no install header when install_command is empty")
+	assert.Contains(t, log, "only-test")
+}
+
+// TestRun_InstallCommand_EnvVars verifies that FARMHAND_* env vars are
+// available in the install_command.
+func TestRun_InstallCommand_EnvVars(t *testing.T) {
+	executor, _ := newTestExecutor(t)
+	outputCh := make(chan string, 16)
+
+	exec := newExecution(func(e *Execution) {
+		e.DeviceSerial = "serial-xyz"
+		e.InstallCommand = "echo $FARMHAND_DEVICE_SERIAL"
+		e.TestCommand = "echo done"
+	})
+
+	result := executor.Run(context.Background(), exec, outputCh)
+
+	assert.Equal(t, 0, result.ExitCode)
+
+	data, err := os.ReadFile(result.LogPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "serial-xyz")
+}
+
+// TestRun_InstallCommand_SharesTimeout verifies that install_command shares
+// the same timeout budget as test_command.
+func TestRun_InstallCommand_SharesTimeout(t *testing.T) {
+	executor, _ := newTestExecutor(t)
+	outputCh := make(chan string, 16)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	exec := newExecution(func(e *Execution) {
+		e.InstallCommand = "sleep 60"
+		e.TestCommand = "echo should-not-run"
+		e.TimeoutMinutes = 0
+	})
+
+	start := time.Now()
+	result := executor.Run(ctx, exec, outputCh)
+	elapsed := time.Since(start)
+
+	assert.Less(t, elapsed, 5*time.Second)
+	assert.NotEqual(t, 0, result.ExitCode)
+	assert.Error(t, result.Error)
+}
+
 // TestRun_ContextCancellation verifies the process is stopped when the parent
 // context is cancelled.
 func TestRun_ContextCancellation(t *testing.T) {

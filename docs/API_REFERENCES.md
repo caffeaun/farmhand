@@ -171,6 +171,7 @@ Create and immediately schedule a new job. Scheduling and execution happen async
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `test_command` | string | yes | Shell command to run on each device via `/bin/sh -c` |
+| `install_command` | string | no | Shell command to run before `test_command` (e.g. download/install artifacts). If it fails, `test_command` is skipped. |
 | `strategy` | string | no | Execution strategy. Only `"fan-out"` (or empty) is accepted. |
 | `device_filter` | object | no | Filter criteria for device selection (see below) |
 | `artifact_path` | string | no | Path on the device to collect artifacts from |
@@ -185,7 +186,8 @@ Create and immediately schedule a new job. Scheduling and execution happen async
 
 ```json
 {
-  "test_command": "pytest /data/tests/ --tb=short",
+  "test_command": "adb -s $FARMHAND_DEVICE_SERIAL shell am instrument -w com.example.test/androidx.test.runner.AndroidJUnitRunner",
+  "install_command": "adb -s $FARMHAND_DEVICE_SERIAL install -r /tmp/build/app.apk && adb -s $FARMHAND_DEVICE_SERIAL install -r /tmp/build/test.apk",
   "strategy": "fan-out",
   "device_filter": {
     "platform": "android",

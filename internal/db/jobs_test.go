@@ -471,3 +471,67 @@ func TestJobResultErrorMessage_RoundTrip(t *testing.T) {
 		t.Errorf("ExitCode = %d, want 1", got.ExitCode)
 	}
 }
+
+// TestJobInstallCommand_RoundTrip verifies that install_command is persisted
+// and retrieved correctly.
+func TestJobInstallCommand_RoundTrip(t *testing.T) {
+	db := openMemory(t)
+	repo := NewJobRepository(db)
+
+	j := newTestJob()
+	j.InstallCommand = "adb -s $SERIAL install -r /tmp/app.apk"
+	if err := repo.Create(&j); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := repo.FindByID(j.ID)
+	if err != nil {
+		t.Fatalf("FindByID: %v", err)
+	}
+	if got.InstallCommand != j.InstallCommand {
+		t.Errorf("InstallCommand = %q, want %q", got.InstallCommand, j.InstallCommand)
+	}
+}
+
+// TestJobInstallCommand_EmptyDefault verifies that jobs without install_command
+// default to an empty string.
+func TestJobInstallCommand_EmptyDefault(t *testing.T) {
+	db := openMemory(t)
+	repo := NewJobRepository(db)
+
+	j := newTestJob()
+	if err := repo.Create(&j); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := repo.FindByID(j.ID)
+	if err != nil {
+		t.Fatalf("FindByID: %v", err)
+	}
+	if got.InstallCommand != "" {
+		t.Errorf("InstallCommand = %q, want empty string", got.InstallCommand)
+	}
+}
+
+// TestJobInstallCommand_FindAll verifies install_command round-trips through FindAll.
+func TestJobInstallCommand_FindAll(t *testing.T) {
+	db := openMemory(t)
+	repo := NewJobRepository(db)
+
+	j := newTestJob()
+	j.InstallCommand = "curl -o /tmp/app.apk https://example.com/app.apk"
+	if err := repo.Create(&j); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	jobs, err := repo.FindAll(JobFilter{})
+	if err != nil {
+		t.Fatalf("FindAll: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("len = %d, want 1", len(jobs))
+	}
+	if jobs[0].InstallCommand != j.InstallCommand {
+		t.Errorf("InstallCommand = %q, want %q", jobs[0].InstallCommand, j.InstallCommand)
+	}
+}

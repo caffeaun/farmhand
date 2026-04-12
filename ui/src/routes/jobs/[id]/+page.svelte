@@ -231,7 +231,11 @@
 		<div class="mb-6 rounded-lg border border-gray-800 bg-gray-900 p-4">
 			<div class="flex items-start gap-3">
 				<div class="min-w-0 flex-1">
-					<p class="mb-1 text-xs text-gray-500">Command</p>
+					{#if job.install_command}
+						<p class="mb-1 text-xs text-gray-500">Install command</p>
+						<p class="mb-3 font-mono text-sm text-gray-200">{job.install_command}</p>
+					{/if}
+					<p class="mb-1 text-xs text-gray-500">Test command</p>
 					<p class="font-mono text-sm text-gray-200">{job.test_command}</p>
 				</div>
 				<span

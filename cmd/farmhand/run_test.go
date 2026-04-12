@@ -99,7 +99,7 @@ func newAuthJobServer(t *testing.T, wantToken, jobID string) *httptest.Server {
 func TestDoSubmitJob_Success(t *testing.T) {
 	srv := newJobServer(t, http.StatusCreated, "job-abc", "completed", nil)
 
-	id, err := doSubmitJob(srv.URL, "", "flutter test", "", nil, 30)
+	id, err := doSubmitJob(srv.URL, "", "flutter test", "", "", nil, 30)
 	require.NoError(t, err)
 	assert.Equal(t, "job-abc", id)
 }
@@ -116,7 +116,7 @@ func TestDoSubmitJob_WithPlatformAndTags(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	id, err := doSubmitJob(srv.URL, "", "echo hello", "android", []string{"team-a", "ci"}, 10)
+	id, err := doSubmitJob(srv.URL, "", "echo hello", "", "android", []string{"team-a", "ci"}, 10)
 	require.NoError(t, err)
 	assert.Equal(t, "job-xyz", id)
 
@@ -138,7 +138,7 @@ func TestDoSubmitJob_WithPlatformAndTags(t *testing.T) {
 func TestDoSubmitJob_WithToken(t *testing.T) {
 	srv := newAuthJobServer(t, "mytoken", "job-auth")
 
-	id, err := doSubmitJob(srv.URL, "mytoken", "go test ./...", "", nil, 30)
+	id, err := doSubmitJob(srv.URL, "mytoken", "go test ./...", "", "", nil, 30)
 	require.NoError(t, err)
 	assert.Equal(t, "job-auth", id)
 }
@@ -146,7 +146,7 @@ func TestDoSubmitJob_WithToken(t *testing.T) {
 func TestDoSubmitJob_UnauthorizedWithoutToken(t *testing.T) {
 	srv := newAuthJobServer(t, "secret", "job-auth")
 
-	_, err := doSubmitJob(srv.URL, "", "go test ./...", "", nil, 30)
+	_, err := doSubmitJob(srv.URL, "", "go test ./...", "", "", nil, 30)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "HTTP 401")
 }
@@ -154,13 +154,13 @@ func TestDoSubmitJob_UnauthorizedWithoutToken(t *testing.T) {
 func TestDoSubmitJob_ServerError(t *testing.T) {
 	srv := newJobServer(t, http.StatusInternalServerError, "", "", nil)
 
-	_, err := doSubmitJob(srv.URL, "", "flutter test", "", nil, 30)
+	_, err := doSubmitJob(srv.URL, "", "flutter test", "", "", nil, 30)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "HTTP 500")
 }
 
 func TestDoSubmitJob_ServerUnreachable(t *testing.T) {
-	_, err := doSubmitJob("http://127.0.0.1:19999", "", "flutter test", "", nil, 30)
+	_, err := doSubmitJob("http://127.0.0.1:19999", "", "flutter test", "", "", nil, 30)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unreachable")
 }
@@ -173,7 +173,7 @@ func TestDoSubmitJob_EmptyID(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	_, err := doSubmitJob(srv.URL, "", "flutter test", "", nil, 30)
+	_, err := doSubmitJob(srv.URL, "", "flutter test", "", "", nil, 30)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty job ID")
 }

@@ -59,4 +59,9 @@ var Migrations = []Migration{
 		Description: "Add error_message to job_results",
 		SQL:         `ALTER TABLE job_results ADD COLUMN error_message TEXT NOT NULL DEFAULT ''`,
 	},
+	{
+		Version:     5,
+		Description: "Add install_command to jobs",
+		SQL:         `ALTER TABLE jobs ADD COLUMN install_command TEXT NOT NULL DEFAULT ''`,
+	},
 }

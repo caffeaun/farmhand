@@ -10,6 +10,7 @@ type Execution struct {
 	DeviceSerial   string
 	DevicePlatform string
 	TestCommand    string
+	InstallCommand string
 	Env            map[string]string
 	TimeoutMinutes int
 }

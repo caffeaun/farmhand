@@ -151,6 +151,7 @@ farmhand run --command <cmd> [flags]
 
 Flags:
   --command  string         Test command to run on the device (required)
+  --install  string         Install command to run before the test command (optional)
   --server   string         FarmHand server base URL (default "http://localhost:8080")
   --token    string         Bearer auth token (or set FARMHAND_TOKEN env var)
   --platform string         Device platform filter: android or ios
@@ -158,6 +159,8 @@ Flags:
   --timeout  int            Job timeout in minutes (default 30)
   --wait     bool           Stream logs and wait for completion (default true)
 ```
+
+When `--install` is provided, it runs before `--command` on each device. If the install step fails, the test command is skipped and the device result is marked as failed. This is useful for separating a one-time build step from fan-out test execution.
 
 Exits with code 1 when the job fails or is cancelled.
 

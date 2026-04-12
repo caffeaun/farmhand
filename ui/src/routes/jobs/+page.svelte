@@ -94,6 +94,7 @@
 
 	// Form fields
 	let formCommand = $state('');
+	let formInstall = $state('');
 	let formPlatform = $state<'any' | 'android' | 'ios'>('any');
 	let formTags = $state('');
 	let formTimeout = $state(30);
@@ -101,6 +102,7 @@
 
 	function openPanel() {
 		formCommand = '';
+		formInstall = '';
 		formPlatform = 'any';
 		formTags = '';
 		formTimeout = 30;
@@ -126,6 +128,7 @@
 		try {
 			const payload: CreateJobRequest = {
 				test_command: formCommand.trim(),
+				install_command: formInstall.trim() || undefined,
 				device_filter: {
 					platform: formPlatform !== 'any' ? formPlatform : undefined,
 					tags: formTags.trim() ? formTags.trim().split(',').map((t) => t.trim()) : undefined
@@ -493,6 +496,21 @@
 							{commandError}
 						</p>
 					{/if}
+				</div>
+
+				<!-- Install command (optional) -->
+				<div class="mb-5">
+					<label for="form-install" class="mb-1.5 block text-sm font-medium text-gray-300">
+						Install Command <span class="text-xs text-gray-500">(optional)</span>
+					</label>
+					<textarea
+						id="form-install"
+						bind:value={formInstall}
+						rows={2}
+						placeholder="e.g. adb -s $FARMHAND_DEVICE_SERIAL install -r /tmp/app.apk"
+						class="w-full resize-none rounded-md border border-gray-700 bg-gray-900 px-3 py-2 font-mono text-sm text-gray-200 placeholder-gray-600 transition-colors focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+					></textarea>
+					<p class="mt-1 text-xs text-gray-500">Runs before the test command. Job fails if this step fails.</p>
 				</div>
 
 				<!-- Platform filter -->
