@@ -112,7 +112,8 @@ func (b *ADBBridge) Connect(serial string) error {
 	if err != nil {
 		return fmt.Errorf("adb connect %s: %w", serial, err)
 	}
-	if strings.Contains(strings.ToLower(out), "failed") {
+	lower := strings.ToLower(out)
+	if strings.Contains(lower, "failed") || strings.Contains(lower, "cannot") || strings.Contains(lower, "unable") {
 		return fmt.Errorf("adb connect %s: %s", serial, strings.TrimSpace(out))
 	}
 	return nil

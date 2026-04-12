@@ -199,13 +199,13 @@ func (m *Manager) poll(ctx context.Context) {
 		return
 	}
 
-	for _, d := range all {
+	for i, d := range all {
 		if d.Status != "offline" && d.LastSeen.Before(staleThreshold) {
 			if err := m.repo.UpdateStatus(d.ID, "offline"); err != nil {
 				m.logger.Error().Err(err).Str("device_id", d.ID).Msg("device manager: mark offline failed")
 				continue
 			}
-			d.Status = "offline"
+			all[i].Status = "offline"
 			m.bus.Publish(events.Event{
 				Type:      events.DeviceOffline,
 				Payload:   d,
@@ -221,9 +221,9 @@ func (m *Manager) poll(ctx context.Context) {
 		for _, d := range all {
 			if d.Status == "offline" && d.Platform == PlatformAndroid && isWirelessSerial(d.ID) {
 				if err := m.adb.Connect(d.ID); err != nil {
-					m.logger.Debug().Err(err).Str("device_id", d.ID).Msg("device manager: wireless reconnect failed")
+					m.logger.Warn().Err(err).Str("device_id", d.ID).Msg("device manager: wireless reconnect failed")
 				} else {
-					m.logger.Debug().Str("device_id", d.ID).Msg("device manager: wireless reconnect attempted")
+					m.logger.Info().Str("device_id", d.ID).Msg("device manager: wireless reconnect succeeded")
 				}
 			}
 		}
