@@ -239,8 +239,19 @@ func (e *Executor) runInstall(ctx context.Context, execution Execution, logPath 
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 
-	// Use the same workspace as the test_command.
+	// Use the same workspace as the test_command. Create it if it doesn't
+	// exist yet (runInstall runs before the main Run workspace setup).
 	workspaceDir := filepath.Join(os.TempDir(), "farmhand", execution.JobID, execution.DeviceID)
+	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
+		logFile.Close()
+		return &ExecResult{
+			ExitCode:     -1,
+			Duration:     time.Since(start),
+			LogPath:      logPath,
+			Error:        fmt.Errorf("create workspace dir for install: %w", err),
+			ErrorMessage: fmt.Sprintf("create workspace dir for install: %v", err),
+		}
+	}
 	cmd.Dir = workspaceDir
 
 	// Same environment as test_command.
