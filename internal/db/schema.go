@@ -64,4 +64,9 @@ var Migrations = []Migration{
 		Description: "Add install_command to jobs",
 		SQL:         `ALTER TABLE jobs ADD COLUMN install_command TEXT NOT NULL DEFAULT ''`,
 	},
+	{
+		Version:     6,
+		Description: "Add hardware_id to devices",
+		SQL:         `ALTER TABLE devices ADD COLUMN hardware_id TEXT NOT NULL DEFAULT ''`,
+	},
 }

@@ -17,6 +17,7 @@ type Device struct {
 	OSVersion    string    `json:"os_version"`
 	Status       string    `json:"status"`        // online, offline, busy, maintenance
 	BatteryLevel int       `json:"battery_level"` // -1 if unknown
+	HardwareID   string    `json:"hardware_id"`   // stable identifier (ro.serialno / UDID)
 	Tags         []string  `json:"tags"`
 	LastSeen     time.Time `json:"last_seen"`
 	CreatedAt    time.Time `json:"created_at"`

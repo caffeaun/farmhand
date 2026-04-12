@@ -102,6 +102,22 @@ func parseDeviceLine(line string) (Device, bool) {
 	}, true
 }
 
+// Connect runs `adb connect <serial>` to re-establish a wireless connection.
+// adb connect can exit 0 even on failure, so stdout is checked for "failed".
+func (b *ADBBridge) Connect(serial string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), adbTimeout)
+	defer cancel()
+
+	out, err := b.run(ctx, "connect", serial)
+	if err != nil {
+		return fmt.Errorf("adb connect %s: %w", serial, err)
+	}
+	if strings.Contains(strings.ToLower(out), "failed") {
+		return fmt.Errorf("adb connect %s: %s", serial, strings.TrimSpace(out))
+	}
+	return nil
+}
+
 // GetProperty calls `adb -s <serial> shell getprop <prop>`.
 //
 // Security note: prop MUST be a hardcoded property name supplied by internal

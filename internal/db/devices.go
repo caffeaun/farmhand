@@ -16,6 +16,7 @@ type Device struct {
 	OSVersion    string    `json:"os_version"`
 	Status       string    `json:"status"`
 	BatteryLevel int       `json:"battery_level"`
+	HardwareID   string    `json:"hardware_id"`
 	Tags         []string  `json:"tags"`
 	LastSeen     time.Time `json:"last_seen"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -42,8 +43,8 @@ func NewDeviceRepository(db *DB) *DeviceRepository {
 // Upsert creates or updates a device record (INSERT OR REPLACE).
 func (r *DeviceRepository) Upsert(d Device) error {
 	const query = `INSERT OR REPLACE INTO devices
-		(id, platform, model, os_version, status, battery_level, tags, last_seen, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		(id, platform, model, os_version, status, battery_level, hardware_id, tags, last_seen, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err := r.db.Exec(query,
 		d.ID,
@@ -52,6 +53,7 @@ func (r *DeviceRepository) Upsert(d Device) error {
 		d.OSVersion,
 		d.Status,
 		d.BatteryLevel,
+		d.HardwareID,
 		tagsToString(d.Tags),
 		d.LastSeen,
 		d.CreatedAt,
@@ -64,7 +66,7 @@ func (r *DeviceRepository) Upsert(d Device) error {
 
 // FindByID retrieves a device by ID. Returns ErrNotFound if not found.
 func (r *DeviceRepository) FindByID(id string) (Device, error) {
-	const query = `SELECT id, platform, model, os_version, status, battery_level, tags, last_seen, created_at
+	const query = `SELECT id, platform, model, os_version, status, battery_level, hardware_id, tags, last_seen, created_at
 		FROM devices WHERE id = ?`
 
 	row := r.db.QueryRow(query, id)
@@ -82,7 +84,7 @@ func (r *DeviceRepository) FindByID(id string) (Device, error) {
 // Tags filter uses AND semantics — device must have ALL specified tags.
 // Tag filtering is done in Go after fetching (MVP limitation for <1000 devices).
 func (r *DeviceRepository) FindAll(filter DeviceFilter) ([]Device, error) {
-	query := `SELECT id, platform, model, os_version, status, battery_level, tags, last_seen, created_at
+	query := `SELECT id, platform, model, os_version, status, battery_level, hardware_id, tags, last_seen, created_at
 		FROM devices WHERE 1=1`
 	args := make([]any, 0)
 
@@ -172,6 +174,26 @@ func (r *DeviceRepository) UpdateLastSeen(id string, t time.Time) error {
 	return nil
 }
 
+// FindByHardwareID retrieves a device by its stable hardware identifier.
+// Returns ErrNotFound if no device has the given hardware_id or if id is empty.
+func (r *DeviceRepository) FindByHardwareID(id string) (Device, error) {
+	if id == "" {
+		return Device{}, ErrNotFound
+	}
+	const query = `SELECT id, platform, model, os_version, status, battery_level, hardware_id, tags, last_seen, created_at
+		FROM devices WHERE hardware_id = ?`
+
+	row := r.db.QueryRow(query, id)
+	d, err := scanDevice(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Device{}, ErrNotFound
+		}
+		return Device{}, fmt.Errorf("find device by hardware_id %s: %w", id, err)
+	}
+	return d, nil
+}
+
 // Delete removes a device by ID.
 func (r *DeviceRepository) Delete(id string) error {
 	const query = `DELETE FROM devices WHERE id = ?`
@@ -208,6 +230,7 @@ func scanDevice(s scanner) (Device, error) {
 		&d.OSVersion,
 		&d.Status,
 		&d.BatteryLevel,
+		&d.HardwareID,
 		&tagsStr,
 		&lastSeen,
 		&createdAt,

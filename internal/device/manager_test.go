@@ -14,17 +14,38 @@ import (
 
 // fakeADB implements adbDriver with configurable behaviour.
 type fakeADB struct {
-	devices        []Device
-	devErr         error
-	wakeErr        error
-	rebootErr      error
-	batteryLevel   int
+	devices         []Device
+	devErr          error
+	wakeErr         error
+	rebootErr       error
+	batteryLevel    int
 	batteryCharging bool
-	batteryErr     error
+	batteryErr      error
+	connectCalls    []string
+	connectErr      error
+	properties      map[string]string // key = "serial:prop"
+	propErr         error
 }
 
 func (f *fakeADB) Devices() ([]Device, error) {
 	return f.devices, f.devErr
+}
+
+func (f *fakeADB) GetProperty(serial, prop string) (string, error) {
+	if f.propErr != nil {
+		return "", f.propErr
+	}
+	if f.properties != nil {
+		if v, ok := f.properties[serial+":"+prop]; ok {
+			return v, nil
+		}
+	}
+	return "", nil
+}
+
+func (f *fakeADB) Connect(serial string) error {
+	f.connectCalls = append(f.connectCalls, serial)
+	return f.connectErr
 }
 
 func (f *fakeADB) WakeDevice(_ string) error   { return f.wakeErr }
@@ -435,5 +456,215 @@ func TestManager_DeviceRecoveredFromOfflinePublishesOnline(t *testing.T) {
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Error("timeout waiting for DeviceOnline event after device recovery")
+	}
+}
+
+// --------------------------------------------------------------------------
+// isWirelessSerial
+// --------------------------------------------------------------------------
+
+func TestIsWirelessSerial(t *testing.T) {
+	tests := []struct {
+		id   string
+		want bool
+	}{
+		{"192.168.1.50:5555", true},
+		{"10.0.0.1:42893", true},
+		{"[::1]:5555", true},
+		{"ZX1G226B4T", false},
+		{"emulator-5554", false},
+		{"R38M80ABCDE", false},
+		{"192.168.1.50", false},   // bare IP, no port
+		{"", false},               // empty
+		{"localhost:5555", false}, // hostname, not IP
+	}
+	for _, tc := range tests {
+		t.Run(tc.id, func(t *testing.T) {
+			got := isWirelessSerial(tc.id)
+			if got != tc.want {
+				t.Errorf("isWirelessSerial(%q) = %v, want %v", tc.id, got, tc.want)
+			}
+		})
+	}
+}
+
+// --------------------------------------------------------------------------
+// Wireless reconnect
+// --------------------------------------------------------------------------
+
+func TestPoll_ReconnectsOfflineWirelessDevice(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	adb := &fakeADB{devices: nil} // ADB returns no devices
+
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	// Seed an offline wireless device in the DB.
+	_ = repo.Upsert(db.Device{
+		ID: "192.168.1.5:5555", Platform: "android", Status: "offline",
+		LastSeen: time.Now().UTC(),
+	})
+
+	mgr.poll(context.Background())
+
+	if len(adb.connectCalls) != 1 || adb.connectCalls[0] != "192.168.1.5:5555" {
+		t.Errorf("connectCalls = %v, want [192.168.1.5:5555]", adb.connectCalls)
+	}
+}
+
+func TestPoll_DoesNotReconnectUSBDevice(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	adb := &fakeADB{devices: nil}
+
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	// Seed an offline USB device.
+	_ = repo.Upsert(db.Device{
+		ID: "ZX1G226B4T", Platform: "android", Status: "offline",
+		LastSeen: time.Now().UTC(),
+	})
+
+	mgr.poll(context.Background())
+
+	if len(adb.connectCalls) != 0 {
+		t.Errorf("connectCalls = %v, want empty (USB device should not trigger reconnect)", adb.connectCalls)
+	}
+}
+
+func TestPoll_ReconnectSkippedWhenADBErrors(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	adb := &fakeADB{devErr: errors.New("adb down")}
+
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	_ = repo.Upsert(db.Device{
+		ID: "192.168.1.5:5555", Platform: "android", Status: "offline",
+		LastSeen: time.Now().UTC(),
+	})
+
+	mgr.poll(context.Background())
+
+	if len(adb.connectCalls) != 0 {
+		t.Errorf("connectCalls = %v, want empty (ADB errored)", adb.connectCalls)
+	}
+}
+
+func TestPoll_ConnectErrorIsNonFatal(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	adb := &fakeADB{devices: nil, connectErr: errors.New("failed to connect")}
+
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	_ = repo.Upsert(db.Device{
+		ID: "192.168.1.5:5555", Platform: "android", Status: "offline",
+		LastSeen: time.Now().UTC(),
+	})
+
+	// Should not panic.
+	mgr.poll(context.Background())
+
+	if len(adb.connectCalls) != 1 {
+		t.Errorf("connectCalls = %v, want 1 attempt even though it fails", adb.connectCalls)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Hardware ID merge
+// --------------------------------------------------------------------------
+
+func TestPoll_MergesDeviceWhenHardwareIDMatchesDifferentSerial(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	// Old record: wireless device with old port, has tags.
+	_ = repo.Upsert(db.Device{
+		ID: "192.168.1.5:42893", Platform: "android", Status: "offline",
+		HardwareID: "HW123", Tags: []string{"ci", "prod"},
+		LastSeen: time.Now().UTC(),
+	})
+
+	// New discovery: same device with new port.
+	newDevice := Device{
+		ID: "192.168.1.5:38891", Platform: PlatformAndroid, Status: "online",
+		LastSeen: time.Now(), CreatedAt: time.Now(),
+	}
+
+	adb := &fakeADB{
+		devices: []Device{newDevice},
+		properties: map[string]string{
+			"192.168.1.5:38891:ro.serialno": "HW123",
+		},
+	}
+
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+	mgr.poll(context.Background())
+
+	// Old record should be gone.
+	_, err := repo.FindByID("192.168.1.5:42893")
+	if !errors.Is(err, db.ErrNotFound) {
+		t.Errorf("old record should be deleted, got err = %v", err)
+	}
+
+	// New record should exist with tags preserved.
+	dev, err := repo.FindByID("192.168.1.5:38891")
+	if err != nil {
+		t.Fatalf("new record not found: %v", err)
+	}
+	if dev.HardwareID != "HW123" {
+		t.Errorf("HardwareID = %q, want HW123", dev.HardwareID)
+	}
+	if len(dev.Tags) != 2 || dev.Tags[0] != "ci" || dev.Tags[1] != "prod" {
+		t.Errorf("Tags = %v, want [ci prod]", dev.Tags)
+	}
+}
+
+func TestPoll_HardwareIDEmptyDoesNotMerge(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	// Existing device.
+	_ = repo.Upsert(db.Device{
+		ID: "192.168.1.5:42893", Platform: "android", Status: "offline",
+		LastSeen: time.Now().UTC(),
+	})
+
+	// New device with no hardware_id (GetProperty returns empty).
+	newDevice := Device{
+		ID: "192.168.1.5:38891", Platform: PlatformAndroid, Status: "online",
+		LastSeen: time.Now(), CreatedAt: time.Now(),
+	}
+
+	adb := &fakeADB{devices: []Device{newDevice}}
+
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+	mgr.poll(context.Background())
+
+	// Both records should exist — no merge without hardware_id.
+	_, err1 := repo.FindByID("192.168.1.5:42893")
+	_, err2 := repo.FindByID("192.168.1.5:38891")
+	if err1 != nil {
+		t.Errorf("old record should still exist: %v", err1)
+	}
+	if err2 != nil {
+		t.Errorf("new record should exist: %v", err2)
 	}
 }

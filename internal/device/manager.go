@@ -3,6 +3,8 @@ package device
 import (
 	"context"
 	"fmt"
+	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,9 +17,21 @@ import (
 // Defined here (consumer side) so tests can inject a fake without touching android.go.
 type adbDriver interface {
 	Devices() ([]Device, error)
+	GetProperty(serial, prop string) (string, error)
+	Connect(serial string) error
 	WakeDevice(serial string) error
 	RebootDevice(serial string) error
 	GetBatteryInfo(serial string) (level int, charging bool, err error)
+}
+
+// isWirelessSerial returns true when id looks like an IP:port ADB serial
+// (e.g. "192.168.1.50:5555"), as opposed to a USB serial like "ZX1G226B4T".
+func isWirelessSerial(id string) bool {
+	host, port, err := net.SplitHostPort(id)
+	if err != nil || port == "" {
+		return false
+	}
+	return net.ParseIP(host) != nil
 }
 
 // iosDriver is the subset of *IOSBridge methods used by Manager.
@@ -100,9 +114,11 @@ func (m *Manager) poll(ctx context.Context) {
 
 	// Collect devices from all bridges.
 	var discovered []Device
+	adbErr := false
 
 	adbDevices, err := m.adb.Devices()
 	if err != nil {
+		adbErr = true
 		m.logger.Error().Err(err).Msg("device manager: ADB bridge error")
 	} else {
 		discovered = append(discovered, adbDevices...)
@@ -117,10 +133,45 @@ func (m *Manager) poll(ctx context.Context) {
 		}
 	}
 
+	// Fetch stable hardware IDs for online Android devices.
+	for i, d := range discovered {
+		if d.Platform == PlatformAndroid && d.Status == "online" {
+			hwID, err := m.adb.GetProperty(d.ID, "ro.serialno")
+			if err != nil {
+				m.logger.Debug().Err(err).Str("device_id", d.ID).Msg("device manager: failed to fetch ro.serialno")
+			} else {
+				discovered[i].HardwareID = strings.TrimSpace(hwID)
+			}
+		}
+		// iOS devices use UDID as their ID, which is already stable.
+		if d.Platform == PlatformIOS {
+			discovered[i].HardwareID = d.ID
+		}
+	}
+
 	// Upsert discovered devices and emit DeviceOnline events for new/recovered ones.
 	for _, d := range discovered {
 		// Check previous status before upserting so we can detect transitions.
 		prev, prevErr := m.repo.FindByID(d.ID)
+
+		// Merge logic: when hardware_id matches an existing record with a
+		// different serial (e.g. wireless port changed), delete the old record
+		// and carry its tags forward to the new one.
+		if d.HardwareID != "" {
+			existing, findErr := m.repo.FindByHardwareID(d.HardwareID)
+			if findErr == nil && existing.ID != d.ID {
+				m.logger.Info().
+					Str("hardware_id", d.HardwareID).
+					Str("old_serial", existing.ID).
+					Str("new_serial", d.ID).
+					Msg("device manager: merging device record (serial changed)")
+				// Preserve user-assigned tags from the old record.
+				if len(existing.Tags) > 0 && len(d.Tags) == 0 {
+					d.Tags = existing.Tags
+				}
+				_ = m.repo.Delete(existing.ID)
+			}
+		}
 
 		dbDev := bridgeDeviceToDB(d)
 		if err := m.repo.Upsert(dbDev); err != nil {
@@ -161,6 +212,20 @@ func (m *Manager) poll(ctx context.Context) {
 				Timestamp: time.Now().UTC(),
 			})
 			m.logger.Info().Str("device_id", d.ID).Msg("device manager: marked offline (stale)")
+		}
+	}
+
+	// Attempt to reconnect offline wireless Android devices.
+	// Skip entirely when ADB bridge is down to avoid spamming connect.
+	if !adbErr {
+		for _, d := range all {
+			if d.Status == "offline" && d.Platform == PlatformAndroid && isWirelessSerial(d.ID) {
+				if err := m.adb.Connect(d.ID); err != nil {
+					m.logger.Debug().Err(err).Str("device_id", d.ID).Msg("device manager: wireless reconnect failed")
+				} else {
+					m.logger.Debug().Str("device_id", d.ID).Msg("device manager: wireless reconnect attempted")
+				}
+			}
 		}
 	}
 
@@ -246,6 +311,7 @@ func bridgeDeviceToDB(d Device) db.Device {
 		OSVersion:    d.OSVersion,
 		Status:       d.Status,
 		BatteryLevel: d.BatteryLevel,
+		HardwareID:   d.HardwareID,
 		Tags:         d.Tags,
 		LastSeen:     d.LastSeen,
 		CreatedAt:    d.CreatedAt,

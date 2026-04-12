@@ -4,7 +4,7 @@ FarmHand is a self-hosted mobile device farm for running end-to-end tests on rea
 
 ## Features
 
-- **Device management**: Automatic ADB (Android) and iOS device discovery with live polling.
+- **Device management**: Automatic ADB (Android) and iOS device discovery with live polling. Wireless ADB devices are automatically reconnected when the connection drops, and stable hardware IDs (`ro.serialno` / UDID) keep device records consistent across port changes.
 - **Job engine**: Fan-out job scheduling — run a test command on every matching device in parallel.
 - **Live log streaming**: Server-Sent Events (SSE) stream of per-device test output.
 - **WebSocket live updates**: Real-time device status and job status pushed to the browser.
