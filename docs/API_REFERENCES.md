@@ -65,20 +65,25 @@ Returns an array (empty array when no results, never null).
 ```json
 [
   {
-    "id": "550e8400-e29b-41d4-a716-446655440000",
-    "serial": "emulator-5554",
-    "model": "Pixel 7",
+    "id": "192.168.20.117:42893",
+    "serial": "192.168.20.117:42893",
+    "model": "SM-A166P",
     "platform": "android",
     "os_version": "14",
     "status": "online",
     "battery_level": 87,
-    "tags": ["production", "emea"],
+    "hardware_id": "R58N12345AB",
+    "tags": ["production", "ci"],
     "last_seen_at": "2026-02-27T10:00:00Z"
   }
 ]
 ```
 
 **Device status values**: `online`, `offline`, `busy`
+
+**`hardware_id`**: Stable device identifier that persists across serial/port changes. For Android devices this is `ro.serialno`; for iOS devices it is the UDID. When a wireless device reconnects with a new port, FarmHand uses `hardware_id` to recognize the same physical device and merges the records (preserving tags).
+
+**Wireless auto-reconnect**: Wireless ADB devices (identified by `IP:port` serial format) that go offline are automatically reconnected via `adb connect` on each poll cycle. No configuration needed.
 
 ---
 
