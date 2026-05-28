@@ -293,6 +293,7 @@ FarmHand runs as a daemon service (systemd on Linux, launchd on macOS) with Clou
 
 See [docs/use-cases/](docs/use-cases/) for deployment guides:
 - [01-ubuntu-with-flutter-android.md](docs/use-cases/01-ubuntu-with-flutter-android.md) — Full Ubuntu setup from scratch: Java 17, Android SDK/NDK, Flutter, Patrol CLI, FarmHand daemon, Cloudflare Tunnel
+- [03-macmini-with-ios.md](docs/use-cases/03-macmini-with-ios.md) — Mac mini (Apple Silicon) for iOS devices: Xcode, GitHub release binary, launchd agent, Cloudflare Tunnel
 
 ## License
 
