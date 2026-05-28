@@ -43,6 +43,10 @@ type DevicesConfig struct {
 	CleanupBetweenRuns bool   `yaml:"cleanup_between_runs" json:"cleanup_between_runs"`
 	WakeBeforeTest     bool   `yaml:"wake_before_test" json:"wake_before_test"`
 	ADBPath            string `yaml:"adb_path" json:"adb_path"`
+	// IOSSimulators lists iOS simulators (by UDID or name) for FarmHand to
+	// auto-boot on startup, surface as online devices, and shut down on exit.
+	// Empty disables simulator management entirely. macOS + full Xcode only.
+	IOSSimulators []string `yaml:"ios_simulators" json:"ios_simulators"`
 }
 
 // JobsConfig holds job execution settings.
@@ -164,7 +168,26 @@ func applyEnv(cfg *Config) error {
 			cfg.Notifications.WebhookURL = val
 		case "FARMHAND_ADB_PATH":
 			cfg.Devices.ADBPath = val
+		case "FARMHAND_IOS_SIMULATORS":
+			cfg.Devices.IOSSimulators = splitCSV(val)
 		}
 	}
 	return nil
+}
+
+// splitCSV splits a comma-separated value into a slice, trimming whitespace
+// around each element and dropping empty entries. Returns nil when no
+// non-empty elements remain.
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

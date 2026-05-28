@@ -318,6 +318,26 @@ func TestAllEnvVarMappings(t *testing.T) {
 	}
 }
 
+func TestEnvOverrideIOSSimulators(t *testing.T) {
+	t.Setenv("FARMHAND_IOS_SIMULATORS", "iPhone 17 Pro, ABCD-1234 ,, iPad Air")
+
+	cfg, err := Load(filepath.Join(t.TempDir(), "nonexistent.yaml"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := []string{"iPhone 17 Pro", "ABCD-1234", "iPad Air"}
+	got := cfg.Devices.IOSSimulators
+	if len(got) != len(want) {
+		t.Fatalf("IOSSimulators = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("IOSSimulators[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 // containsAny returns true if s contains any of the given substrings.
 func containsAny(s string, subs ...string) bool {
 	sl := strings.ToLower(s)

@@ -40,13 +40,20 @@ type iosDriver interface {
 	Devices() ([]Device, error)
 }
 
+// simulatorDriver is the subset of *SimulatorBridge methods used by Manager.
+// Defined here (consumer side) so tests can inject a fake without touching simulator.go.
+type simulatorDriver interface {
+	Devices() ([]Device, error)
+}
+
 // Manager handles device discovery, lifecycle, and operations.
 // It polls the ADB and iOS bridges at a configurable interval, upserts
 // discovered devices into the repository, marks stale devices as offline,
 // and publishes DeviceOnline / DeviceOffline events when status changes.
 type Manager struct {
 	adb          adbDriver
-	ios          iosDriver // nil on Linux (iOS not supported)
+	ios          iosDriver       // nil on Linux (iOS not supported)
+	sim          simulatorDriver // nil when no simulators are configured
 	repo         *db.DeviceRepository
 	bus          *events.Bus
 	logger       zerolog.Logger
@@ -54,23 +61,40 @@ type Manager struct {
 	mu           sync.Mutex // prevents concurrent poll ticks from overlapping
 }
 
-// NewManager creates a Manager.
-// ios may be nil on platforms where iOS is not supported.
+// NewManager creates a Manager. Every bridge is optional:
+//   - adb may be nil when no Android SDK/adb is installed.
+//   - ios may be nil on platforms where iOS is not supported.
+//   - sim may be nil when no iOS simulators are configured.
+//
+// poll() guards each bridge, so any combination (including iOS-simulator-only)
+// works.
 func NewManager(
 	adb *ADBBridge,
 	ios *IOSBridge,
+	sim *SimulatorBridge,
 	repo *db.DeviceRepository,
 	bus *events.Bus,
 	pollInterval time.Duration,
 	logger zerolog.Logger,
 ) *Manager {
+	// Assign to the interface only when non-nil so a typed-nil pointer does not
+	// produce a non-nil interface that bypasses the nil guards in poll().
+	var adbI adbDriver
+	if adb != nil {
+		adbI = adb
+	}
 	var iosI iosDriver
 	if ios != nil {
 		iosI = ios
 	}
+	var simI simulatorDriver
+	if sim != nil {
+		simI = sim
+	}
 	return &Manager{
-		adb:          adb,
+		adb:          adbI,
 		ios:          iosI,
+		sim:          simI,
 		repo:         repo,
 		bus:          bus,
 		logger:       logger,
@@ -116,12 +140,14 @@ func (m *Manager) poll(ctx context.Context) {
 	var discovered []Device
 	adbErr := false
 
-	adbDevices, err := m.adb.Devices()
-	if err != nil {
-		adbErr = true
-		m.logger.Error().Err(err).Msg("device manager: ADB bridge error")
-	} else {
-		discovered = append(discovered, adbDevices...)
+	if m.adb != nil {
+		adbDevices, err := m.adb.Devices()
+		if err != nil {
+			adbErr = true
+			m.logger.Error().Err(err).Msg("device manager: ADB bridge error")
+		} else {
+			discovered = append(discovered, adbDevices...)
+		}
 	}
 
 	if m.ios != nil {
@@ -133,9 +159,18 @@ func (m *Manager) poll(ctx context.Context) {
 		}
 	}
 
+	if m.sim != nil {
+		simDevices, err := m.sim.Devices()
+		if err != nil {
+			m.logger.Error().Err(err).Msg("device manager: simulator bridge error")
+		} else {
+			discovered = append(discovered, simDevices...)
+		}
+	}
+
 	// Fetch stable hardware IDs for online Android devices.
 	for i, d := range discovered {
-		if d.Platform == PlatformAndroid && d.Status == "online" {
+		if m.adb != nil && d.Platform == PlatformAndroid && d.Status == "online" {
 			hwID, err := m.adb.GetProperty(d.ID, "ro.serialno")
 			if err != nil {
 				m.logger.Debug().Err(err).Str("device_id", d.ID).Msg("device manager: failed to fetch ro.serialno")
@@ -216,8 +251,8 @@ func (m *Manager) poll(ctx context.Context) {
 	}
 
 	// Attempt to reconnect offline wireless Android devices.
-	// Skip entirely when ADB bridge is down to avoid spamming connect.
-	if !adbErr {
+	// Skip entirely when ADB bridge is absent or down to avoid spamming connect.
+	if m.adb != nil && !adbErr {
 		for _, d := range all {
 			if d.Status == "offline" && d.Platform == PlatformAndroid && isWirelessSerial(d.ID) {
 				if err := m.adb.Connect(d.ID); err != nil {
@@ -253,6 +288,9 @@ func (m *Manager) Wake(id string) error {
 		return fmt.Errorf("device %s is offline", id)
 	}
 	if device.Platform == PlatformAndroid {
+		if m.adb == nil {
+			return fmt.Errorf("wake unavailable: ADB bridge not configured")
+		}
 		return m.adb.WakeDevice(id)
 	}
 	return fmt.Errorf("wake not supported for platform %s", device.Platform)
@@ -265,6 +303,9 @@ func (m *Manager) Reboot(id string) error {
 		return err
 	}
 	if device.Platform == PlatformAndroid {
+		if m.adb == nil {
+			return fmt.Errorf("reboot unavailable: ADB bridge not configured")
+		}
 		return m.adb.RebootDevice(id)
 	}
 	return fmt.Errorf("reboot not supported for platform %s", device.Platform)
@@ -286,7 +327,7 @@ func (m *Manager) HealthCheck(id string) (DeviceHealth, error) {
 		LastSeen:     device.LastSeen,
 	}
 
-	if device.Platform == PlatformAndroid && health.IsOnline {
+	if m.adb != nil && device.Platform == PlatformAndroid && health.IsOnline {
 		level, charging, battErr := m.adb.GetBatteryInfo(device.ID)
 		if battErr == nil {
 			health.BatteryLevel = level

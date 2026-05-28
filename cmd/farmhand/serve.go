@@ -77,14 +77,30 @@ func runServe(_ *cobra.Command, _ []string) error {
 		logger.Debug().Err(iosErr).Msg("iOS bridge unavailable; iOS device discovery disabled")
 	}
 
-	// Create device manager only when the ADB bridge is available.
-	// The iOS bridge is optional and may be nil on non-macOS hosts.
+	// Create simulator bridge when simulators are configured. macOS + Xcode
+	// only; unavailability is non-fatal (simulator management simply disabled).
+	var simBridge *device.SimulatorBridge
+	if len(cfg.Devices.IOSSimulators) > 0 {
+		var simErr error
+		simBridge, simErr = device.NewSimulatorBridge(
+			cfg.Devices.IOSSimulators,
+			logger.With().Str("component", "simulator_bridge").Logger(),
+		)
+		if simErr != nil {
+			logger.Warn().Err(simErr).Msg("simulator bridge unavailable; iOS simulator management disabled")
+		}
+	}
+
+	// Create the device manager when any bridge is available. ADB, iOS, and
+	// simulator bridges are all optional and may be nil (e.g. a macOS host
+	// running only iOS simulators with no Android SDK installed).
 	var deviceMgr *device.Manager
-	if adbBridge != nil {
+	if adbBridge != nil || iosBridge != nil || simBridge != nil {
 		pollInterval := time.Duration(cfg.Devices.PollIntervalSecs) * time.Second
 		deviceMgr = device.NewManager(
 			adbBridge,
 			iosBridge,
+			simBridge,
 			deviceRepo,
 			bus,
 			pollInterval,
@@ -171,6 +187,13 @@ func runServe(_ *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Boot configured iOS simulators before discovery so they are online by
+	// the time the manager polls. Per-simulator failures are logged inside.
+	if simBridge != nil {
+		logger.Info().Strs("simulators", cfg.Devices.IOSSimulators).Msg("booting configured iOS simulators")
+		simBridge.BootAll(ctx)
+	}
+
 	if deviceMgr != nil {
 		deviceMgr.Start(ctx)
 		logger.Info().Msg("device manager started")
@@ -202,6 +225,12 @@ func runServe(_ *cobra.Command, _ []string) error {
 	<-ctx.Done()
 	stop() // stop receiving further signals
 	logger.Info().Msg("shutdown signal received")
+
+	// Shut down only the simulators FarmHand booted. Uses a fresh context
+	// because ctx is already cancelled by the signal.
+	if simBridge != nil {
+		simBridge.ShutdownAll(context.Background())
+	}
 
 	// Graceful shutdown: give in-flight requests 30 seconds to finish.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

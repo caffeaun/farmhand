@@ -64,6 +64,16 @@ func (f *fakeIOS) Devices() ([]Device, error) {
 	return f.devices, f.devErr
 }
 
+// fakeSim implements simulatorDriver with configurable behaviour.
+type fakeSim struct {
+	devices []Device
+	devErr  error
+}
+
+func (f *fakeSim) Devices() ([]Device, error) {
+	return f.devices, f.devErr
+}
+
 // openTestDB opens a file-backed SQLite database in t.TempDir().
 // File-backed so WAL mode and foreign keys work as in production.
 func openTestDB(t *testing.T) *db.DB {
@@ -341,6 +351,81 @@ func TestManager_IOSDevicesDiscovered(t *testing.T) {
 	if got.Platform != PlatformIOS {
 		t.Errorf("Platform = %q, want %q", got.Platform, PlatformIOS)
 	}
+}
+
+func TestManager_SimulatorDevicesDiscovered(t *testing.T) {
+	adb := &fakeADB{devices: nil}
+	simDev := makeOnlineDevice("SIMUDID-0001", PlatformIOS)
+	simDev.Tags = []string{"simulator"}
+
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	mgr := newManagerWithFakes(adb, nil, repo, bus, 10*time.Second)
+	mgr.sim = &fakeSim{devices: []Device{simDev}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mgr.poll(ctx)
+
+	got, err := repo.FindByID("SIMUDID-0001")
+	if err != nil {
+		t.Fatalf("FindByID: %v", err)
+	}
+	if got.Platform != PlatformIOS {
+		t.Errorf("Platform = %q, want %q", got.Platform, PlatformIOS)
+	}
+	if got.Status != "online" {
+		t.Errorf("Status = %q, want online", got.Status)
+	}
+	if got.HardwareID != "SIMUDID-0001" {
+		t.Errorf("HardwareID = %q, want SIMUDID-0001 (UDID)", got.HardwareID)
+	}
+	if !deviceHasTag(got.Tags, "simulator") {
+		t.Errorf("Tags = %v, want to contain 'simulator'", got.Tags)
+	}
+}
+
+func TestManager_PollWithNilADBBridge(t *testing.T) {
+	// Simulates a macOS host with no adb installed: only a simulator bridge.
+	simDev := makeOnlineDevice("SIM-NOADB-1", PlatformIOS)
+	simDev.Tags = []string{"simulator"}
+
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	mgr := newManagerWithFakes(nil, nil, repo, bus, 10*time.Second)
+	mgr.adb = nil // explicit: no ADB bridge
+	mgr.sim = &fakeSim{devices: []Device{simDev}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Must not panic despite m.adb being nil.
+	mgr.poll(ctx)
+
+	got, err := repo.FindByID("SIM-NOADB-1")
+	if err != nil {
+		t.Fatalf("FindByID: %v", err)
+	}
+	if got.Status != "online" {
+		t.Errorf("Status = %q, want online", got.Status)
+	}
+}
+
+// deviceHasTag is a small test helper checking tag membership.
+func deviceHasTag(tags []string, want string) bool {
+	for _, t := range tags {
+		if t == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestManager_List(t *testing.T) {

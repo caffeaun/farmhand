@@ -53,6 +53,19 @@ devices:
   # Env: FARMHAND_ADB_PATH
   adb_path: "adb"
 
+  # iOS simulators to manage as a fleet (macOS + full Xcode only).
+  # FarmHand boots each on startup, surfaces booted ones as online "ios"
+  # devices (tagged "simulator"), and shuts down only the ones it booted on
+  # exit. Each entry is either a simulator UDID or a simulator name; list
+  # available ones with: xcrun simctl list devices
+  # Leave empty/omit to disable simulator management entirely.
+  # Reference a sim in a job's test_command via $FARMHAND_DEVICE_SERIAL, e.g.:
+  #   xcodebuild test -scheme MyApp -destination "id=$FARMHAND_DEVICE_SERIAL"
+  # Env: FARMHAND_IOS_SIMULATORS (comma-separated)
+  ios_simulators: []
+    # - "iPhone 17 Pro"
+    # - "EDA19CAC-8ABA-40FE-BA21-9D850FEA438C"
+
 jobs:
   # Maximum time (minutes) a job may run before it is killed.
   default_timeout_minutes: 30
