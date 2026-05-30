@@ -208,13 +208,17 @@ func streamLogs(jobRepo logJobRepoAPI, resultRepo logJobResultRepoAPI, collector
 //
 // The handler:
 //  1. Looks up the job by :id — returns 404 if not found.
-//  2. Looks up results for the job via resultRepo.FindByJobID, then iterates to
-//     find the entry matching :device_id — returns 404 if not found.
-//  3. For a terminal job: calls collector.Read, streams all lines as SSE data
-//     events, then sends the done event and returns.
-//  4. For a running job: calls collector.Tail, streams live lines, exits when
-//     the context is cancelled (client disconnected).
-func deviceLogs(jobRepo logJobRepoAPI, resultRepo logJobResultRepoAPI, collector logCollectorAPI) gin.HandlerFunc {
+//  2. Probes the device log file via collector.Read — returns 404 ("device
+//     log not found") only if the file genuinely doesn't exist. This works
+//     for both completed devices (file flushed) and in-flight executions
+//     (file actively being written by the executor) — no JobResult row is
+//     required.
+//  3. For a terminal job: streams the entire file as SSE data events, then
+//     sends the done event and returns.
+//  4. For a running job: closes the probe handle and starts a live tail via
+//     collector.Tail, streaming each new line as an SSE data event; exits
+//     when the context is cancelled (client disconnected).
+func deviceLogs(jobRepo logJobRepoAPI, _ logJobResultRepoAPI, collector logCollectorAPI) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		jobID := c.Param("id")
 		deviceID := c.Param("device_id")
@@ -229,16 +233,13 @@ func deviceLogs(jobRepo logJobRepoAPI, resultRepo logJobResultRepoAPI, collector
 			return
 		}
 
-		// Find the result row for this specific device.
-		results, _ := resultRepo.FindByJobID(jobID) //nolint:errcheck
-		found := false
-		for _, r := range results {
-			if r.DeviceID == deviceID {
-				found = true
-				break
-			}
-		}
-		if !found {
+		// Probe the device log file via the collector. The log file is the
+		// authority for "does this device have output for this job?" — it
+		// exists as soon as the executor starts the execution, well before
+		// any JobResult row is written. This is what enables live-log access
+		// for in-flight executions.
+		rc, err := collector.Read(jobID, deviceID)
+		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "device log not found"})
 			return
 		}
@@ -259,22 +260,21 @@ func deviceLogs(jobRepo logJobRepoAPI, resultRepo logJobResultRepoAPI, collector
 			w.Flush()
 		}
 
-		// Terminal job: read the whole log file then send done.
+		// Terminal job: stream the existing file then send done.
 		if isJobTerminal(j.Status) {
-			rc, err := collector.Read(jobID, deviceID)
-			if err == nil {
-				scanner := bufio.NewScanner(rc)
-				for scanner.Scan() {
-					fmt.Fprintf(w, "data: %s\n\n", scanner.Text())
-					w.Flush()
-				}
-				rc.Close() //nolint:errcheck
+			scanner := bufio.NewScanner(rc)
+			for scanner.Scan() {
+				fmt.Fprintf(w, "data: %s\n\n", scanner.Text())
+				w.Flush()
 			}
+			rc.Close() //nolint:errcheck
 			sendDone()
 			return
 		}
 
-		// Running job: tail live lines until context is cancelled.
+		// Running job: drop the probe handle and start a live tail.
+		rc.Close() //nolint:errcheck
+
 		ch := make(chan string, 64)
 		go func() {
 			_ = collector.Tail(ctx, jobID, deviceID, ch) //nolint:errcheck

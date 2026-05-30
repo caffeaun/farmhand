@@ -103,6 +103,19 @@ func (b *blockingLogCollector) Tail(ctx context.Context, jobID, deviceID string,
 	return ctx.Err()
 }
 
+// missingFileLogCollector simulates a collector where the on-disk log file
+// does not exist (Read returns an error). Used to assert the deviceLogs 404
+// path for "device log not found" without depending on results lookup.
+type missingFileLogCollector struct{}
+
+func (m *missingFileLogCollector) Read(jobID, deviceID string) (io.ReadCloser, error) {
+	return nil, fmt.Errorf("log file not found")
+}
+
+func (m *missingFileLogCollector) Tail(ctx context.Context, jobID, deviceID string, ch chan<- string) error {
+	return fmt.Errorf("log file not found")
+}
+
 // ----------------------------------------------------------------------------
 // Test helpers
 // ----------------------------------------------------------------------------
@@ -531,20 +544,15 @@ func TestDeviceLogs_UnknownJob(t *testing.T) {
 	assert.Equal(t, "job not found", body["error"])
 }
 
-// TestDeviceLogs_UnknownDevice verifies that GET /api/v1/jobs/:id/logs/:device_id
-// returns HTTP 404 when the job exists but has no result row for the given device.
-func TestDeviceLogs_UnknownDevice(t *testing.T) {
+// TestDeviceLogs_LogFileMissing verifies that GET /api/v1/jobs/:id/logs/:device_id
+// returns HTTP 404 when the on-disk log file does not exist for the given
+// (job, device) pair. Existence of the log file is the authority — JobResult
+// rows are not consulted (so in-flight executions can still be tailed).
+func TestDeviceLogs_LogFileMissing(t *testing.T) {
 	j := makeJob("job-known", "completed")
 	jobRepo := newFakeLogJobRepo(j)
 	resultRepo := newFakeLogResultRepo()
-	// Add a result for a different device to ensure the filter is specific.
-	resultRepo.add(db.JobResult{
-		ID:       "result-other",
-		JobID:    "job-known",
-		DeviceID: "device-other",
-		Status:   "passed",
-	})
-	collector := &blockingLogCollector{}
+	collector := &missingFileLogCollector{}
 
 	r := newLogTestRouter(jobRepo, resultRepo, collector)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-known/logs/device-missing", nil)
@@ -556,6 +564,37 @@ func TestDeviceLogs_UnknownDevice(t *testing.T) {
 	var body map[string]interface{}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	assert.Equal(t, "device log not found", body["error"])
+}
+
+// TestDeviceLogs_InFlightWithoutResultRow verifies that for a running job
+// without a JobResult row (the normal in-flight state — results are written
+// only when each execution completes), the handler still streams live lines
+// as long as the device log file exists on disk. This is the v0.4.1 fix:
+// in-flight log access no longer requires a JobResult row.
+func TestDeviceLogs_InFlightWithoutResultRow(t *testing.T) {
+	j := makeJob("job-inflight", "running")
+	jobRepo := newFakeLogJobRepo(j)
+	resultRepo := newFakeLogResultRepo() // intentionally empty
+
+	lines := []string{"starting tap loop", "taps=100 elapsed=10s", "taps=200 elapsed=20s"}
+	collector := &fakeLogCollector{lines: lines}
+
+	r := newLogTestRouter(jobRepo, resultRepo, collector)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/job-inflight/logs/device-x", nil).
+		WithContext(ctx)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	for _, line := range lines {
+		assert.Contains(t, body, fmt.Sprintf("data: %s", line),
+			"in-flight log line %q must stream even without a JobResult row", line)
+	}
+	assert.Contains(t, body, "event: done", "done event must terminate the stream after context cancel")
 }
 
 // TestDeviceLogs_TerminalJob verifies that a completed job streams all log
