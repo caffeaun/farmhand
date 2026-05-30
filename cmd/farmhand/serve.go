@@ -139,6 +139,10 @@ func runServe(_ *cobra.Command, _ []string) error {
 		logger.With().Str("component", "runner").Logger(),
 	)
 
+	// Create the cancel registry. One instance lives for the process lifetime;
+	// it is not shared with any other component.
+	cancelRegistry := job.NewCancelRegistry()
+
 	// Create WebSocket hub.
 	hub := api.NewHub(
 		deviceRepo,
@@ -161,6 +165,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		LogCollector:      logCollector,
 		ArtifactCollector: artifactCollector,
 		WSHub:             hub,
+		Canceller:         cancelRegistry,
 	}
 	// Only set the interface field when the concrete pointer is non-nil.
 	// A nil *device.Manager assigned to a deviceManagerAPI interface produces

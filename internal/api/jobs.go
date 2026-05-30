@@ -35,6 +35,13 @@ type jobRunnerAPI interface {
 	Run(ctx context.Context, j db.Job, executions []*job.Execution)
 }
 
+// jobCancellerAPI is the consumer-side interface for job.CancelRegistry.
+type jobCancellerAPI interface {
+	Register(jobID string, cancel context.CancelFunc)
+	Cancel(jobID string) bool
+	Remove(jobID string)
+}
+
 // CreateJobRequest is the JSON body accepted by POST /api/v1/jobs.
 type CreateJobRequest struct {
 	// TestCommand is required — the shell command to run on each device.
@@ -109,16 +116,18 @@ func toJobResponses(jobs []db.Job) []jobResponse {
 }
 
 // RegisterJobRoutes registers job CRUD endpoints on the given router group.
-func RegisterJobRoutes(rg *gin.RouterGroup, jobRepo jobRepoAPI, resultRepo jobResultRepoAPI, scheduler jobSchedulerAPI, runner jobRunnerAPI) {
-	rg.POST("/jobs", createJob(jobRepo, scheduler, runner))
+func RegisterJobRoutes(rg *gin.RouterGroup, jobRepo jobRepoAPI, resultRepo jobResultRepoAPI, scheduler jobSchedulerAPI, runner jobRunnerAPI, canceller jobCancellerAPI) {
+	rg.POST("/jobs", createJob(jobRepo, scheduler, runner, canceller))
 	rg.GET("/jobs", listJobs(jobRepo))
 	rg.GET("/jobs/:id", getJob(jobRepo, resultRepo))
-	rg.DELETE("/jobs/:id", deleteJob(jobRepo))
+	rg.DELETE("/jobs/:id", deleteJob(jobRepo, canceller))
 }
 
 // createJob returns a handler that creates a new job, schedules it, and
-// launches the runner in a goroutine.
-func createJob(jobRepo jobRepoAPI, scheduler jobSchedulerAPI, runner jobRunnerAPI) gin.HandlerFunc {
+// launches the runner in a goroutine. The goroutine uses a derived context
+// from context.Background() (NOT from c.Request.Context(), which dies when
+// the HTTP response is written) so the run outlives the request.
+func createJob(jobRepo jobRepoAPI, scheduler jobSchedulerAPI, runner jobRunnerAPI, canceller jobCancellerAPI) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req CreateJobRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -166,8 +175,26 @@ func createJob(jobRepo jobRepoAPI, scheduler jobSchedulerAPI, runner jobRunnerAP
 			return
 		}
 
-		// Launch the runner as a fire-and-forget goroutine.
-		go runner.Run(context.Background(), j, executions)
+		// Derive a cancellable context from Background so the run outlives the
+		// HTTP response. Register the cancel func before launching the goroutine
+		// so that a concurrent DELETE arriving immediately after this response
+		// cannot miss the registration window.
+		ctx, cancel := context.WithCancel(context.Background())
+		if canceller != nil {
+			canceller.Register(j.ID, cancel)
+		}
+
+		// Launch the runner goroutine. defer cancel() satisfies go vet (context
+		// leak check) and ensures the context is cleaned up if canceller is nil.
+		// On natural completion the registry entry is also removed so it does
+		// not leak memory indefinitely.
+		go func() {
+			defer cancel()
+			if canceller != nil {
+				defer canceller.Remove(j.ID)
+			}
+			runner.Run(ctx, j, executions)
+		}()
 
 		c.JSON(http.StatusCreated, toJobResponse(j))
 	}
@@ -232,8 +259,11 @@ func getJob(jobRepo jobRepoAPI, resultRepo jobResultRepoAPI) gin.HandlerFunc {
 }
 
 // deleteJob returns a handler that cancels a job by updating its status to
-// "cancelled" and returns HTTP 204.
-func deleteJob(jobRepo jobRepoAPI) gin.HandlerFunc {
+// "cancelled" and returns HTTP 204. After the status update succeeds, it
+// signals the in-flight runner (if any) to stop via the canceller. The bool
+// return of Cancel is intentionally discarded — both "was running" and
+// "already terminal" map to the same 204 response.
+func deleteJob(jobRepo jobRepoAPI, canceller jobCancellerAPI) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
 
@@ -244,6 +274,12 @@ func deleteJob(jobRepo jobRepoAPI) gin.HandlerFunc {
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to cancel job"})
 			return
+		}
+
+		// Signal the in-flight runner to stop. This is a no-op when the job is
+		// already terminal or when no canceller is configured.
+		if canceller != nil {
+			canceller.Cancel(id) //nolint:errcheck // bool return deliberately discarded
 		}
 
 		c.Status(http.StatusNoContent)

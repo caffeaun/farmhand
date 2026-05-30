@@ -21,6 +21,9 @@ type executor interface {
 // jobRepo is the consumer-side interface for job persistence.
 type jobRepo interface {
 	SetCompleted(id string, t time.Time, status string) error
+	// UpdateStatus sets only the status column, leaving completed_at null.
+	// Used when a job is cancelled so that completed_at remains unset.
+	UpdateStatus(id, status string) error
 }
 
 // jobResultRepo is the consumer-side interface for job result persistence.
@@ -112,6 +115,35 @@ func (r *Runner) Run(ctx context.Context, job db.Job, executions []*Execution) {
 
 	wg.Wait()
 
+	// If the context was cancelled, mark the job as cancelled. Do NOT call
+	// SetCompleted — that would set completed_at and clobber the status that
+	// the API DELETE handler may have already written.
+	if ctx.Err() == context.Canceled {
+		if err := r.jobRepo.UpdateStatus(job.ID, "cancelled"); err != nil {
+			r.logger.Error().
+				Err(err).
+				Str("job_id", job.ID).
+				Msg("failed to update job status to cancelled")
+		}
+
+		r.bus.Publish(events.Event{
+			Type:      events.JobCancelled,
+			Payload:   job,
+			Timestamp: time.Now().UTC(),
+		})
+		r.notifier.Send(notify.WebhookEvent{
+			Type:      notify.EventJobCancelled,
+			Payload:   job,
+			Timestamp: time.Now().UTC(),
+		})
+
+		r.logger.Info().
+			Str("job_id", job.ID).
+			Int("result_count", len(results)).
+			Msg("job cancelled")
+		return
+	}
+
 	// Determine overall job status: all passed -> 'completed', any failed/error -> 'failed'.
 	finalStatus := "completed"
 	for _, res := range results {
@@ -183,6 +215,27 @@ func (r *Runner) runOne(ctx context.Context, job db.Job, ex *Execution) (result 
 
 	execResult := r.exec.Run(ctx, *ex, outputCh)
 	close(outputCh)
+
+	// Detect cancellation via the structured signal: ExitCode==-1 combined with
+	// context.Canceled. This avoids fragile string-matching on error messages.
+	if execResult.ExitCode == -1 && ctx.Err() == context.Canceled {
+		result = db.JobResult{
+			JobID:        ex.JobID,
+			DeviceID:     ex.DeviceID,
+			Status:       "cancelled",
+			ExitCode:     -1,
+			ErrorMessage: "cancelled by user",
+		}
+		if err := r.resultRepo.Create(&result); err != nil {
+			r.logger.Error().
+				Err(err).
+				Str("job_id", ex.JobID).
+				Str("device_id", ex.DeviceID).
+				Msg("failed to persist cancelled result")
+		}
+		r.releaseDevice(ex.DeviceID)
+		return result
+	}
 
 	// Determine per-device result status.
 	resultStatus := "passed"

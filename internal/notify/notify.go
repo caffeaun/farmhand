@@ -28,6 +28,7 @@ const (
 	EventJobStarted    = "job.started"
 	EventJobCompleted  = "job.completed"
 	EventJobFailed     = "job.failed"
+	EventJobCancelled  = "job.cancelled"
 )
 
 // Notifier sends webhook notifications for system events.

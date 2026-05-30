@@ -66,13 +66,43 @@ func (p *panicExecutor) Run(_ context.Context, _ Execution, _ chan<- string) Exe
 	panic("simulated executor panic")
 }
 
+// blockingExecutor blocks until the gate channel is closed, then returns
+// ExitCode==-1 to simulate a context-cancelled execution.
+type blockingExecutor struct {
+	gate <-chan struct{} // closed to unblock Run
+}
+
+func (b *blockingExecutor) Run(ctx context.Context, _ Execution, _ chan<- string) ExecResult {
+	select {
+	case <-ctx.Done():
+		// Context cancelled before gate opened: return the structured signal.
+		<-b.gate // drain gate so the test goroutine can continue
+		return ExecResult{ExitCode: -1, ErrorMessage: "context cancelled"}
+	case <-b.gate:
+		// Gate opened; if context was concurrently cancelled (the two cases
+		// became ready simultaneously and Go picked this branch at random),
+		// return the same cancellation-shaped result so the runner classifies
+		// the execution as cancelled regardless of which branch won.
+		if ctx.Err() == context.Canceled {
+			return ExecResult{ExitCode: -1, ErrorMessage: "context cancelled"}
+		}
+		// Gate opened normally (used in other test variants).
+		return ExecResult{ExitCode: 0}
+	}
+}
+
 // fakeJobRepo is a manual fake for the jobRepo interface.
 type fakeJobRepo struct {
-	mu           sync.Mutex
-	completedID  string
-	completedAt  time.Time
+	mu              sync.Mutex
+	completedID     string
+	completedAt     time.Time
 	completedStatus string
 	setCompletedErr error
+
+	// UpdateStatus tracking
+	updatedID     string
+	updatedStatus string
+	updateStatusCalls int
 }
 
 func (f *fakeJobRepo) SetCompleted(id string, t time.Time, status string) error {
@@ -82,6 +112,15 @@ func (f *fakeJobRepo) SetCompleted(id string, t time.Time, status string) error 
 	f.completedAt = t
 	f.completedStatus = status
 	return f.setCompletedErr
+}
+
+func (f *fakeJobRepo) UpdateStatus(id, status string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.updatedID = id
+	f.updatedStatus = status
+	f.updateStatusCalls++
+	return nil
 }
 
 // fakeResultRepo is a manual fake for the jobResultRepo interface.
@@ -665,5 +704,164 @@ func TestRunner_AllPassed_JobCompleted(t *testing.T) {
 
 	if fakeJob.completedStatus != "completed" {
 		t.Errorf("job status = %q, want completed", fakeJob.completedStatus)
+	}
+}
+
+// TestRunner_Cancellation verifies that when the context is cancelled mid-run:
+//   (a) the per-execution JobResult has Status="cancelled", ExitCode=-1, and
+//       ErrorMessage containing "cancelled";
+//   (b) the runner's final repo call was UpdateStatus(job.ID, "cancelled"),
+//       NOT SetCompleted;
+//   (c) events.JobCancelled is published exactly once via the bus.
+func TestRunner_Cancellation(t *testing.T) {
+	t.Parallel()
+
+	gate := make(chan struct{})
+	exec := &blockingExecutor{gate: gate}
+
+	fakeJob := &fakeJobRepo{}
+	fakeResults := &fakeResultRepo{}
+	fakeDevices := newFakeDeviceRepo()
+	fakeNotify := &fakeNotifier{}
+	fakeBus := &fakeEventBus{}
+
+	runner := newTestRunner(
+		exec,
+		fakeJob,
+		fakeResults,
+		fakeDevices,
+		&fakeArtifactCollector{},
+		fakeNotify,
+		fakeBus,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Run the job in a goroutine; it blocks until the gate is signalled.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runner.Run(ctx, makeJob("job-cancel", ""), []*Execution{
+			makeExecution("job-cancel", "dev-cancel"),
+		})
+	}()
+
+	// Cancel the context to trigger cancellation while the executor is blocking.
+	cancel()
+
+	// Unblock the executor (blockingExecutor drains gate after ctx.Done()).
+	// The executor's select will have already chosen ctx.Done(), so we just
+	// need to send one value so that the drain inside blockingExecutor unblocks.
+	gate <- struct{}{}
+
+	// Wait for Run to finish.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not finish after context cancellation")
+	}
+
+	// (a) per-execution result must be "cancelled" with ExitCode=-1.
+	res := fakeResults.findByDevice("dev-cancel")
+	if res == nil {
+		t.Fatal("expected a result for dev-cancel, got none")
+	}
+	if res.Status != "cancelled" {
+		t.Errorf("result status = %q, want cancelled", res.Status)
+	}
+	if res.ExitCode != -1 {
+		t.Errorf("result exit_code = %d, want -1", res.ExitCode)
+	}
+	if res.ErrorMessage == "" {
+		t.Error("expected ErrorMessage to contain 'cancelled', got empty string")
+	}
+
+	// (b) repo must have received UpdateStatus, NOT SetCompleted.
+	fakeJob.mu.Lock()
+	completedCalled := fakeJob.completedID != ""
+	updateStatusCalled := fakeJob.updateStatusCalls
+	updatedStatus := fakeJob.updatedStatus
+	fakeJob.mu.Unlock()
+
+	if completedCalled {
+		t.Error("SetCompleted should NOT have been called for a cancelled job")
+	}
+	if updateStatusCalled != 1 {
+		t.Errorf("UpdateStatus call count = %d, want 1", updateStatusCalled)
+	}
+	if updatedStatus != "cancelled" {
+		t.Errorf("UpdateStatus status = %q, want cancelled", updatedStatus)
+	}
+
+	// (c) events.JobCancelled published exactly once.
+	busCount := 0
+	fakeBus.mu.Lock()
+	for _, e := range fakeBus.events {
+		if e.Type == events.JobCancelled {
+			busCount++
+		}
+	}
+	fakeBus.mu.Unlock()
+	if busCount != 1 {
+		t.Errorf("JobCancelled bus event count = %d, want 1", busCount)
+	}
+
+	// Device must still be released (runOne's existing defer handles this).
+	if status := fakeDevices.statusOf("dev-cancel"); status != "online" {
+		t.Errorf("device status = %q, want online after cancellation", status)
+	}
+}
+
+// TestRunner_NaturalCompletion_NoJobCancelledEvent verifies that a successful
+// (non-cancelled) run does NOT emit a JobCancelled event and still calls
+// SetCompleted normally.
+func TestRunner_NaturalCompletion_NoJobCancelledEvent(t *testing.T) {
+	t.Parallel()
+
+	fakeExec := newFakeExecutor()
+	fakeExec.setResult("dev-natural", ExecResult{ExitCode: 0, Duration: 5 * time.Millisecond})
+
+	fakeJob := &fakeJobRepo{}
+	fakeResults := &fakeResultRepo{}
+	fakeDevices := newFakeDeviceRepo()
+	fakeNotify := &fakeNotifier{}
+	fakeBus := &fakeEventBus{}
+
+	runner := newTestRunner(
+		fakeExec,
+		fakeJob,
+		fakeResults,
+		fakeDevices,
+		&fakeArtifactCollector{},
+		fakeNotify,
+		fakeBus,
+	)
+
+	runner.Run(context.Background(), makeJob("job-natural", ""), []*Execution{
+		makeExecution("job-natural", "dev-natural"),
+	})
+
+	// No JobCancelled event must have been published.
+	if _, ok := fakeBus.eventOfType(events.JobCancelled); ok {
+		t.Error("JobCancelled bus event must NOT be published on natural completion")
+	}
+	if _, ok := fakeNotify.eventOfType(notify.EventJobCancelled); ok {
+		t.Error("EventJobCancelled webhook event must NOT be sent on natural completion")
+	}
+
+	// UpdateStatus must NOT have been called; only SetCompleted.
+	fakeJob.mu.Lock()
+	updateCalls := fakeJob.updateStatusCalls
+	setCompletedCalled := fakeJob.completedID != ""
+	fakeJob.mu.Unlock()
+
+	if updateCalls != 0 {
+		t.Errorf("UpdateStatus call count = %d, want 0 on natural completion", updateCalls)
+	}
+	if !setCompletedCalled {
+		t.Error("SetCompleted must be called on natural completion")
+	}
+	if fakeJob.completedStatus != "completed" {
+		t.Errorf("job completed status = %q, want completed", fakeJob.completedStatus)
 	}
 }

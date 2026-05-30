@@ -318,7 +318,7 @@ Get a single job with its per-device execution results.
 | `error_message` | string | Human-readable failure description. Always present. Empty string `""` when the device passed; populated with the last output lines or a summary when status is `failed` or `error`. Never `null`. |
 | `created_at` | string (RFC 3339) | Timestamp when the result row was created |
 
-**Job result status values**: `running`, `passed`, `failed`, `error`
+**Job result status values**: `running`, `passed`, `failed`, `error`, `cancelled`
 
 **Response — 404 Not Found**
 ```json
@@ -329,7 +329,20 @@ Get a single job with its per-device execution results.
 
 ### DELETE /api/v1/jobs/:id
 
-Cancel a job by setting its status to `cancelled`. Returns HTTP 204 with no body.
+Cancel a running job. Returns HTTP 204 with no body.
+
+**Cancellation behavior (v0.5.0+)**
+
+When called on a job with status `running`:
+
+1. **Process group killed**: The runner's context is cancelled. The executor's `cmd.Cancel` sends SIGKILL to the entire shell process group, terminating the test command and any child processes immediately.
+2. **Per-device `JobResult` rows written**: For each in-flight device execution, a `JobResult` row is written with `status="cancelled"`, `exit_code=-1`, and `error_message="cancelled by user"`.
+3. **Devices restored to `online`**: Each affected device is returned to `status="online"` via the runner's `releaseDevice` defer. Note: this restoration may be momentarily overwritten by `manager.poll()`'s Upsert within one poll cycle — this is intentional, not a bug. The device will stabilize to its correct live status on the next poll.
+4. **Event published**: `events.JobCancelled` is published to the internal event bus and forwarded to the webhook notifier (fires when `"cancelled"` is listed under `notify_on` in config — matches `EventJobCancelled`).
+
+**Idempotency**: Cancelling a job that is already in a terminal state (`completed`, `failed`, or `cancelled`) is safe and returns `204 No Content` with no side effects.
+
+**No restart survival**: The cancel registry is in-memory only. In-flight jobs at server shutdown are not automatically cancelled — their DB rows remain in whatever state they were in at shutdown time. Re-starting the server will not resume or cancel them automatically.
 
 **Response — 204 No Content**
 
@@ -688,3 +701,81 @@ Validation errors may include an additional `fields` object:
 ## Request tracing
 
 Every request receives a unique `X-Request-ID` header in the response. If the client sends an `X-Request-ID` request header, the same value is echoed back.
+
+---
+
+## Cancel-on-the-Fly — Manual Smoke Verification
+
+Run this curl sequence against `devices-1` after deploying v0.5.0 to manually verify the cancellation flow.
+
+Set a base URL and auth token first:
+
+```sh
+export BASE=http://devices-1:8080/api/v1
+export TOKEN=<your-auth-token>
+```
+
+**Step 1 — Create a long-running job and capture its ID**
+
+```sh
+JOB_ID=$(curl -s -X POST "$BASE/jobs" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"test_command":"sleep 600","device_filter":{"platform":"android"}}' \
+  | jq -r '.id')
+echo "Job ID: $JOB_ID"
+```
+
+Expected: HTTP 201, `status` is `"queued"` or `"running"`.
+
+**Step 2 — Confirm the job is running**
+
+```sh
+curl -s "$BASE/jobs/$JOB_ID" -H "Authorization: Bearer $TOKEN" | jq '.status'
+```
+
+Expected: `"running"`.
+
+**Step 3 — Cancel the job**
+
+```sh
+curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+  "$BASE/jobs/$JOB_ID" -H "Authorization: Bearer $TOKEN"
+```
+
+Expected: `204`.
+
+**Step 4 — Confirm job status is cancelled**
+
+```sh
+curl -s "$BASE/jobs/$JOB_ID" -H "Authorization: Bearer $TOKEN" | jq '.status'
+```
+
+Expected: `"cancelled"`.
+
+**Step 5 — Confirm per-device results**
+
+```sh
+curl -s "$BASE/jobs/$JOB_ID" -H "Authorization: Bearer $TOKEN" \
+  | jq '.results[] | {status, exit_code, error_message}'
+```
+
+Expected: each result has `status="cancelled"`, `exit_code=-1`, `error_message="cancelled by user"`.
+
+**Step 6 — Confirm devices returned to online**
+
+```sh
+curl -s "$BASE/devices" -H "Authorization: Bearer $TOKEN" \
+  | jq '.[] | select(.status != "online") | {id, status}'
+```
+
+Expected: empty output (all previously busy devices are now `"online"`). Allow one full poll cycle (~5 s) before checking.
+
+**Step 7 — Confirm idempotency**
+
+```sh
+curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+  "$BASE/jobs/$JOB_ID" -H "Authorization: Bearer $TOKEN"
+```
+
+Expected: `204` again with no side effects.

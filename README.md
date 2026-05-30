@@ -107,7 +107,7 @@ All protected endpoints require `Authorization: Bearer <token>`. The base path i
 | `POST` | `/api/v1/jobs` | Create and schedule a new job |
 | `GET` | `/api/v1/jobs` | List jobs. Query: `status` (queued/running/completed/failed) |
 | `GET` | `/api/v1/jobs/:id` | Get a job with per-device results |
-| `DELETE` | `/api/v1/jobs/:id` | Cancel a job |
+| `DELETE` | `/api/v1/jobs/:id` | Cancel job — kills the executor process group and frees devices immediately |
 | `GET` | `/api/v1/jobs/:id/status` | Lightweight status poll |
 | `GET` | `/api/v1/jobs/:id/logs` | SSE log stream — all devices (`text/event-stream`) |
 | `GET` | `/api/v1/jobs/:id/logs/:device_id` | SSE log stream — single device |

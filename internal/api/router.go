@@ -58,6 +58,11 @@ type RouterDeps struct {
 	// Runner executes scheduled job executions.
 	Runner jobRunnerAPI
 
+	// Canceller tracks in-flight job cancel funcs so DELETE /jobs/:id can
+	// stop a running job mid-execution. When nil, cancel-on-the-fly is
+	// disabled but all other job routes remain functional.
+	Canceller jobCancellerAPI
+
 	// LogCollector streams log output for running jobs.
 	LogCollector logCollectorAPI
 
@@ -115,7 +120,7 @@ func NewRouter(cfg RouterConfig, deps RouterDeps) *gin.Engine {
 	}
 
 	if deps.JobRepo != nil && deps.JobResultRepo != nil && deps.Scheduler != nil && deps.Runner != nil {
-		RegisterJobRoutes(authorized, deps.JobRepo, deps.JobResultRepo, deps.Scheduler, deps.Runner)
+		RegisterJobRoutes(authorized, deps.JobRepo, deps.JobResultRepo, deps.Scheduler, deps.Runner, deps.Canceller)
 	}
 
 	if deps.JobRepo != nil && deps.JobResultRepo != nil && deps.LogCollector != nil {

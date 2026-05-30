@@ -5,11 +5,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/rs/zerolog"
 
+	"github.com/caffeaun/farmhand/internal/db"
+	"github.com/caffeaun/farmhand/internal/events"
 	"github.com/caffeaun/farmhand/internal/notify"
 )
 
@@ -228,5 +231,75 @@ func TestSend_Async_WebhookCalled(t *testing.T) {
 		// success — webhook was invoked asynchronously
 	case <-time.After(3 * time.Second):
 		t.Fatal("webhook was not called within 3 seconds")
+	}
+}
+
+func TestSendSync_JobCancelledEvent(t *testing.T) {
+	// Verify that events.JobCancelled and notify.EventJobCancelled are equal.
+	if events.JobCancelled != notify.EventJobCancelled {
+		t.Errorf("constant mismatch: events.JobCancelled=%q notify.EventJobCancelled=%q",
+			events.JobCancelled, notify.EventJobCancelled)
+	}
+
+	var gotBody []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		gotBody = body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	result := db.JobResult{
+		ID:       "result-1",
+		JobID:    "job-42",
+		DeviceID: "device-7",
+		Status:   "cancelled",
+	}
+
+	n := notify.New(srv.URL, discardLogger())
+	event := notify.WebhookEvent{
+		Type:      notify.EventJobCancelled,
+		Payload:   result,
+		Timestamp: time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC),
+	}
+
+	if err := n.SendSync(event); err != nil {
+		t.Fatalf("SendSync returned error: %v", err)
+	}
+
+	if len(gotBody) == 0 {
+		t.Fatal("expected non-empty body")
+	}
+
+	bodyStr := string(gotBody)
+
+	if !strings.Contains(bodyStr, "job.cancelled") {
+		t.Errorf("expected body to contain %q, got: %s", "job.cancelled", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "cancelled") {
+		t.Errorf("expected body to contain status %q, got: %s", "cancelled", bodyStr)
+	}
+
+	// Verify the full round-trip via JSON unmarshal.
+	var received notify.WebhookEvent
+	if err := json.Unmarshal(gotBody, &received); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if received.Type != notify.EventJobCancelled {
+		t.Errorf("expected type %q, got %q", notify.EventJobCancelled, received.Type)
+	}
+
+	payload, ok := received.Payload.(map[string]interface{})
+	if !ok {
+		t.Fatalf("payload is not a map, got %T", received.Payload)
+	}
+	if payload["status"] != "cancelled" {
+		t.Errorf("expected payload status=%q, got %v", "cancelled", payload["status"])
 	}
 }

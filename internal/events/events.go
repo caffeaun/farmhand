@@ -11,6 +11,7 @@ const (
 	JobStarted          = "job.started"
 	JobCompleted        = "job.completed"
 	JobFailed           = "job.failed"
+	JobCancelled        = "job.cancelled"
 )
 
 // Event represents a system event published to the bus.

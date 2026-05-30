@@ -5,6 +5,23 @@ All notable changes to FarmHand are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-05-30
+
+### Added
+
+- `internal/job/CancelRegistry` — thread-safe, lock-protected map from job ID to `context.CancelFunc`. Supports `Register`, `Cancel` (cancel-then-remove in one lock), `Remove`, and `Has` operations. Includes a `NewCancelRegistry` constructor wired into `cmd/farmhand/serve.go`.
+- `events.JobCancelled` constant (`"job.cancelled"`) in `internal/events/events.go`.
+- `notify.EventJobCancelled` constant (`"job.cancelled"`) in `internal/notify/notify.go`.
+
+### Changed
+
+- `DELETE /api/v1/jobs/:id` now performs **real cancellation** — the runner's context is cancelled, which causes the executor to send SIGKILL to the shell process group, freeing affected devices back to `online`. Per-device `JobResult` rows are written with `status="cancelled"`, `exit_code=-1`, and `error_message="cancelled by user"`.
+- After cancellation the runner publishes `events.JobCancelled` (`"job.cancelled"`) to the internal event bus and to the webhook notifier (`notify.EventJobCancelled`). The webhook fires when `"cancelled"` is listed under `notify_on` in the server configuration.
+- The endpoint is **idempotent**: calling `DELETE` on a job that is already in a terminal state (`completed`, `failed`, or `cancelled`) still returns `204 No Content` with no side effects.
+- Cancellation is **in-memory only** — the cancel registry does not persist across server restarts. In-flight jobs at shutdown are handled by startup recovery (`RunRecovery`), which marks any `running`/`preparing`/`installing` jobs as `failed` on next server start.
+
+---
+
 ## [0.1.0] - 2026-02-27
 
 ### Added
