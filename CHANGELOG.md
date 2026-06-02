@@ -5,6 +5,47 @@ All notable changes to FarmHand are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-06-02
+
+### Added
+
+#### Device-input CLI (Phase A)
+
+- `farmhand tap --device X --x N --y N` — single tap at pixel coordinates via the ADB bridge (no adb shell-out from job scripts).
+- `farmhand swipe --device X --from-x ... --to-x ... [--duration-ms]` — swipe gesture; deadline scales with the gesture duration so long swipes don't timeout.
+- `farmhand keyevent --device X --keycode <KEYCODE_X | int>` — keyevent dispatch with keycode validated against `^KEYCODE_[A-Z0-9_]+$` or non-negative integer; rejects arbitrary strings before they reach the device shell.
+- `farmhand text --device X --text "..."` — types text into the focused field; the bridge single-quote-escapes the text on the device side so embedded shell metacharacters (`;`, `&`, `|`, `$`, backticks) stay literal.
+- `ADBBridge.Tap/Swipe/KeyEvent/InputText` methods + `quoteForDeviceShell` helper in `internal/device/android.go`.
+- `Manager.Tap/Swipe/KeyEvent/InputText` with the standard five-guard pattern (FindByID → ErrNotFound; offline → 409-shape; non-Android → unsupported-platform; nil ADB → not-configured; else bridge call).
+- `docs/cli.md` and `docs/use-cases/04-android-tap-stress.md` (stress job whose `test_command` uses `farmhand tap` instead of `adb`).
+
+#### Device capture as bridge methods (Phase B)
+
+- `ADBBridge.Screenshot(serial)` — returns raw PNG bytes from `adb -s <serial> exec-out screencap -p`. Implemented via new binary-safe helpers `runRaw` / `runDeviceRaw`.
+- `ADBBridge.Logcat(serial, opts)` — returns the device's logcat buffer; `LogcatOptions{Since, Filter}` lets callers bound the dump. Filter values restricted to `V/D/I/W/E/F/S` allow-list.
+- `Manager.Screenshot` and `Manager.Logcat` mirror the same five guards as the input methods.
+- No REST endpoint and no CLI subcommand — these are Go methods only; future work (executor auto-capture into the artifact dir) consumes them in-process.
+
+#### Vision-driven inspect (Phase C)
+
+- `farmhand inspect --device X` — takes a real screenshot via the bridge, POSTs it to the configured vision LLM (MiniMax-M3 by default) with a forced tool-call (`report_inspection`), and prints the topic list as JSON: `{topics: [{name, coordinates: {x1, y1, x2, y2}, color, type, text}], screenshot_size}`. Bounding-box centers are intended to be tapped via `farmhand tap`.
+- `--mock-from <file>` flag — skips the vision provider entirely and reads the topic list from a local JSON file. Real screenshot + real PNG-header decode + mocked topics; lets you E2E the inspect → match → tap chain on real hardware without spending LLM tokens or provisioning an API key.
+- `internal/vision` package: `Client` interface (`Inspect(ctx, png)`), `Topic` / `Box` / `InspectResult` types, and `MiniMaxClient` over stdlib `net/http`. OpenAI-compatible request shape with image_url base64 data URI and forced tool_choice. No external SDK; httptest-driven tests cover happy path, empty topics, non-2xx, malformed JSON, missing tool call, malformed tool-call arguments, and context cancellation.
+- `vision:` block in config (`provider`, `api_key_env`, `base_url`, `model`, `timeout_sec`, `detail`); commented example in `farmhand.example.yaml`. API key resolved lazily from the env variable named by `api_key_env` (default `MINIMAX_API_KEY`); empty key disables the command with a clear error.
+- `docs/use-cases/05-vision-driven-tap.md` — inspect-and-tap script with name/text/color/type filtering examples plus the `--mock-from` workflow for E2E testing without an LLM.
+
+### Changed
+
+- `adbDriver` interface (consumer-side, in `internal/device/manager.go`) extended with the six new methods.
+- Default config defaults gain a `Vision` block (MiniMax-M3, `https://api.minimax.io/v1`, 15s timeout, `detail: high`).
+
+### Notes
+
+- All CLI subcommands talk to the SQLite DB directly (the same file `farmhand serve` polls into) — no HTTP round-trip. The runner host must have `farmhand serve` running (or have run recently) so the `devices` table is populated for `FindByID` lookups.
+- Per the architecture rule, no job runner ever shells out to `adb` — `kanoonthteam/tap`'s `tap.sh` should be rewritten to call `farmhand tap` in a follow-up.
+
+---
+
 ## [0.5.0] - 2026-05-30
 
 ### Added

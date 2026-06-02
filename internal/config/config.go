@@ -18,6 +18,20 @@ type Config struct {
 	Devices       DevicesConfig       `yaml:"devices" json:"devices"`
 	Jobs          JobsConfig          `yaml:"jobs" json:"jobs"`
 	Notifications NotificationsConfig `yaml:"notifications" json:"notifications"`
+	Vision        VisionConfig        `yaml:"vision" json:"vision"`
+}
+
+// VisionConfig configures the vision-LLM client used by `farmhand
+// vision-locate`. The API key is read lazily from the environment
+// variable named by APIKeyEnv; an empty resolved value disables the
+// vision client (the command errors with a clear message).
+type VisionConfig struct {
+	Provider   string `yaml:"provider"     json:"provider"`     // "minimax"
+	APIKeyEnv  string `yaml:"api_key_env"  json:"api_key_env"`  // env var holding the API key
+	BaseURL    string `yaml:"base_url"     json:"base_url"`     // e.g. https://api.minimax.io/v1
+	Model      string `yaml:"model"        json:"model"`        // e.g. MiniMax-M3
+	TimeoutSec int    `yaml:"timeout_sec"  json:"timeout_sec"`  // request timeout in seconds
+	Detail     string `yaml:"detail"       json:"detail"`       // "low" | "default" | "high"
 }
 
 // ServerConfig holds HTTP server settings.
@@ -98,6 +112,14 @@ func defaults() *Config {
 		Notifications: NotificationsConfig{
 			WebhookURL: "",
 			NotifyOn:   []string{"failure", "completion"},
+		},
+		Vision: VisionConfig{
+			Provider:   "minimax",
+			APIKeyEnv:  "MINIMAX_API_KEY",
+			BaseURL:    "https://api.minimax.io/v1",
+			Model:      "MiniMax-M3",
+			TimeoutSec: 15,
+			Detail:     "high",
 		},
 	}
 }

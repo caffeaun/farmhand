@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +26,44 @@ type fakeADB struct {
 	connectErr      error
 	properties      map[string]string // key = "serial:prop"
 	propErr         error
+
+	// Input recorders & error knobs for Tap/Swipe/KeyEvent/InputText.
+	tapCalls       []tapCall
+	swipeCalls     []swipeCall
+	keyEventCalls  []keyEventCall
+	inputTextCalls []inputTextCall
+	tapErr         error
+	swipeErr       error
+	keyEventErr    error
+	inputTextErr   error
+
+	// Capture recorders & error knobs for Screenshot/Logcat.
+	screenshotCalls []string
+	screenshotBytes []byte
+	screenshotErr   error
+	logcatCalls     []logcatCall
+	logcatBytes     []byte
+	logcatErr       error
+}
+
+type logcatCall struct {
+	Serial string
+	Opts   LogcatOptions
+}
+
+type tapCall struct {
+	Serial string
+	X, Y   int
+}
+type swipeCall struct {
+	Serial                 string
+	X1, Y1, X2, Y2, DurMs  int
+}
+type keyEventCall struct {
+	Serial, Keycode string
+}
+type inputTextCall struct {
+	Serial, Text string
 }
 
 func (f *fakeADB) Devices() ([]Device, error) {
@@ -52,6 +91,30 @@ func (f *fakeADB) WakeDevice(_ string) error   { return f.wakeErr }
 func (f *fakeADB) RebootDevice(_ string) error { return f.rebootErr }
 func (f *fakeADB) GetBatteryInfo(_ string) (int, bool, error) {
 	return f.batteryLevel, f.batteryCharging, f.batteryErr
+}
+func (f *fakeADB) Tap(serial string, x, y int) error {
+	f.tapCalls = append(f.tapCalls, tapCall{serial, x, y})
+	return f.tapErr
+}
+func (f *fakeADB) Swipe(serial string, x1, y1, x2, y2, durationMs int) error {
+	f.swipeCalls = append(f.swipeCalls, swipeCall{serial, x1, y1, x2, y2, durationMs})
+	return f.swipeErr
+}
+func (f *fakeADB) KeyEvent(serial, keycode string) error {
+	f.keyEventCalls = append(f.keyEventCalls, keyEventCall{serial, keycode})
+	return f.keyEventErr
+}
+func (f *fakeADB) InputText(serial, text string) error {
+	f.inputTextCalls = append(f.inputTextCalls, inputTextCall{serial, text})
+	return f.inputTextErr
+}
+func (f *fakeADB) Screenshot(serial string) ([]byte, error) {
+	f.screenshotCalls = append(f.screenshotCalls, serial)
+	return f.screenshotBytes, f.screenshotErr
+}
+func (f *fakeADB) Logcat(serial string, opts LogcatOptions) ([]byte, error) {
+	f.logcatCalls = append(f.logcatCalls, logcatCall{serial, opts})
+	return f.logcatBytes, f.logcatErr
 }
 
 // fakeIOS implements iosDriver with configurable behaviour.
@@ -717,6 +780,373 @@ func TestPoll_MergesDeviceWhenHardwareIDMatchesDifferentSerial(t *testing.T) {
 	}
 	if len(dev.Tags) != 2 || dev.Tags[0] != "ci" || dev.Tags[1] != "prod" {
 		t.Errorf("Tags = %v, want [ci prod]", dev.Tags)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Manager.Tap / Swipe / KeyEvent / InputText
+// --------------------------------------------------------------------------
+
+// seedOnlineAndroid is a small helper that upserts an online android device.
+func seedOnlineAndroid(t *testing.T, repo *db.DeviceRepository, id string) {
+	t.Helper()
+	if err := repo.Upsert(db.Device{
+		ID: id, Platform: PlatformAndroid, Status: "online",
+		LastSeen: time.Now().UTC(), CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed online android %s: %v", id, err)
+	}
+}
+
+// seedOnlineIOS is the iOS counterpart used for "unsupported platform" tests.
+func seedOnlineIOS(t *testing.T, repo *db.DeviceRepository, id string) {
+	t.Helper()
+	if err := repo.Upsert(db.Device{
+		ID: id, Platform: PlatformIOS, Status: "online",
+		LastSeen: time.Now().UTC(), CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed online ios %s: %v", id, err)
+	}
+}
+
+// seedOfflineAndroid is the offline counterpart used for 409-shape tests.
+func seedOfflineAndroid(t *testing.T, repo *db.DeviceRepository, id string) {
+	t.Helper()
+	if err := repo.Upsert(db.Device{
+		ID: id, Platform: PlatformAndroid, Status: "offline",
+		LastSeen: time.Now().UTC(), CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed offline android %s: %v", id, err)
+	}
+}
+
+// newManagerWithNilADB returns a manager with no ADB bridge (input must fail
+// with "unavailable: ADB bridge not configured").
+func newManagerWithNilADB(t *testing.T, repo *db.DeviceRepository, bus *events.Bus) *Manager {
+	t.Helper()
+	return &Manager{
+		adb:          nil,
+		repo:         repo,
+		bus:          bus,
+		logger:       zerolog.Nop(),
+		pollInterval: time.Minute,
+	}
+}
+
+func TestManager_Tap_HappyPath(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	seedOnlineAndroid(t, repo, "dev-1")
+	adb := &fakeADB{}
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	if err := mgr.Tap("dev-1", 100, 200); err != nil {
+		t.Fatalf("Tap: %v", err)
+	}
+	if len(adb.tapCalls) != 1 || adb.tapCalls[0] != (tapCall{"dev-1", 100, 200}) {
+		t.Errorf("tapCalls = %v, want one call for (dev-1, 100, 200)", adb.tapCalls)
+	}
+}
+
+func TestManager_Tap_NotFound(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	adb := &fakeADB{}
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	err := mgr.Tap("does-not-exist", 100, 200)
+	if !errors.Is(err, db.ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestManager_Tap_Offline(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	seedOfflineAndroid(t, repo, "off-1")
+	adb := &fakeADB{}
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	err := mgr.Tap("off-1", 100, 200)
+	if err == nil || !strings.Contains(err.Error(), "offline") {
+		t.Errorf("err = %v, want offline-shape error", err)
+	}
+}
+
+func TestManager_Tap_IOSUnsupported(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	seedOnlineIOS(t, repo, "ios-1")
+	adb := &fakeADB{}
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	err := mgr.Tap("ios-1", 100, 200)
+	if err == nil || !strings.Contains(err.Error(), "not supported for platform ios") {
+		t.Errorf("err = %v, want unsupported-platform error for ios", err)
+	}
+}
+
+func TestManager_Tap_NilADB(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	seedOnlineAndroid(t, repo, "dev-1")
+	mgr := newManagerWithNilADB(t, repo, bus)
+
+	err := mgr.Tap("dev-1", 100, 200)
+	if err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Errorf("err = %v, want not-configured error", err)
+	}
+}
+
+func TestManager_Swipe_HappyPath(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	seedOnlineAndroid(t, repo, "dev-1")
+	adb := &fakeADB{}
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	if err := mgr.Swipe("dev-1", 100, 200, 300, 400, 250); err != nil {
+		t.Fatalf("Swipe: %v", err)
+	}
+	want := swipeCall{"dev-1", 100, 200, 300, 400, 250}
+	if len(adb.swipeCalls) != 1 || adb.swipeCalls[0] != want {
+		t.Errorf("swipeCalls = %v, want one %v", adb.swipeCalls, want)
+	}
+}
+
+func TestManager_Swipe_OfflineAndUnsupported(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	seedOfflineAndroid(t, repo, "off-1")
+	seedOnlineIOS(t, repo, "ios-1")
+	adb := &fakeADB{}
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	if err := mgr.Swipe("off-1", 0, 0, 1, 1, 0); err == nil {
+		t.Error("expected offline error")
+	}
+	if err := mgr.Swipe("ios-1", 0, 0, 1, 1, 0); err == nil {
+		t.Error("expected unsupported-platform error for ios")
+	}
+	if err := mgr.Swipe("nope", 0, 0, 1, 1, 0); !errors.Is(err, db.ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestManager_KeyEvent_HappyPath(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	seedOnlineAndroid(t, repo, "dev-1")
+	adb := &fakeADB{}
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	if err := mgr.KeyEvent("dev-1", "KEYCODE_BACK"); err != nil {
+		t.Fatalf("KeyEvent: %v", err)
+	}
+	if len(adb.keyEventCalls) != 1 || adb.keyEventCalls[0] != (keyEventCall{"dev-1", "KEYCODE_BACK"}) {
+		t.Errorf("keyEventCalls = %v, want one (dev-1, KEYCODE_BACK)", adb.keyEventCalls)
+	}
+}
+
+func TestManager_KeyEvent_OfflineUnsupportedNilADB(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	seedOfflineAndroid(t, repo, "off-1")
+	seedOnlineIOS(t, repo, "ios-1")
+	seedOnlineAndroid(t, repo, "nil-adb-target")
+
+	adb := &fakeADB{}
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	if err := mgr.KeyEvent("off-1", "4"); err == nil {
+		t.Error("expected offline error")
+	}
+	if err := mgr.KeyEvent("ios-1", "4"); err == nil {
+		t.Error("expected unsupported-platform error for ios")
+	}
+
+	nilMgr := newManagerWithNilADB(t, repo, bus)
+	if err := nilMgr.KeyEvent("nil-adb-target", "4"); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Errorf("err = %v, want not-configured error", err)
+	}
+}
+
+func TestManager_InputText_HappyPath(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	seedOnlineAndroid(t, repo, "dev-1")
+	adb := &fakeADB{}
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	if err := mgr.InputText("dev-1", "hello world"); err != nil {
+		t.Fatalf("InputText: %v", err)
+	}
+	if len(adb.inputTextCalls) != 1 || adb.inputTextCalls[0] != (inputTextCall{"dev-1", "hello world"}) {
+		t.Errorf("inputTextCalls = %v, want one (dev-1, hello world)", adb.inputTextCalls)
+	}
+}
+
+func TestManager_InputText_OfflineUnsupported(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	seedOfflineAndroid(t, repo, "off-1")
+	seedOnlineIOS(t, repo, "ios-1")
+
+	adb := &fakeADB{}
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	if err := mgr.InputText("off-1", "x"); err == nil {
+		t.Error("expected offline error")
+	}
+	if err := mgr.InputText("ios-1", "x"); err == nil {
+		t.Error("expected unsupported-platform error for ios")
+	}
+	if err := mgr.InputText("nope", "x"); !errors.Is(err, db.ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Manager.Screenshot / Logcat
+// --------------------------------------------------------------------------
+
+func TestManager_Screenshot_HappyPath(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	seedOnlineAndroid(t, repo, "dev-1")
+	wantBytes := []byte{0x89, 'P', 'N', 'G'}
+	adb := &fakeADB{screenshotBytes: wantBytes}
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	got, err := mgr.Screenshot("dev-1")
+	if err != nil {
+		t.Fatalf("Screenshot: %v", err)
+	}
+	if string(got) != string(wantBytes) {
+		t.Errorf("bytes = %q, want %q", got, wantBytes)
+	}
+	if len(adb.screenshotCalls) != 1 || adb.screenshotCalls[0] != "dev-1" {
+		t.Errorf("screenshotCalls = %v, want [dev-1]", adb.screenshotCalls)
+	}
+}
+
+func TestManager_Screenshot_FiveGuards(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	seedOfflineAndroid(t, repo, "off-1")
+	seedOnlineIOS(t, repo, "ios-1")
+	seedOnlineAndroid(t, repo, "nil-adb-target")
+
+	adb := &fakeADB{screenshotBytes: []byte("x")}
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	// not found
+	if _, err := mgr.Screenshot("does-not-exist"); !errors.Is(err, db.ErrNotFound) {
+		t.Errorf("not-found: err = %v, want ErrNotFound", err)
+	}
+	// offline
+	if _, err := mgr.Screenshot("off-1"); err == nil || !strings.Contains(err.Error(), "offline") {
+		t.Errorf("offline: err = %v, want offline-shape", err)
+	}
+	// iOS unsupported
+	if _, err := mgr.Screenshot("ios-1"); err == nil || !strings.Contains(err.Error(), "not supported for platform ios") {
+		t.Errorf("ios: err = %v, want unsupported-platform", err)
+	}
+	// nil ADB
+	nilMgr := newManagerWithNilADB(t, repo, bus)
+	if _, err := nilMgr.Screenshot("nil-adb-target"); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Errorf("nil adb: err = %v, want not-configured", err)
+	}
+}
+
+func TestManager_Logcat_HappyPath(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	seedOnlineAndroid(t, repo, "dev-1")
+	want := []byte("01-01 12:00:00.000  1234  5678 I MainActivity: hello\n")
+	adb := &fakeADB{logcatBytes: want}
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	opts := LogcatOptions{Since: time.Minute, Filter: "E"}
+	got, err := mgr.Logcat("dev-1", opts)
+	if err != nil {
+		t.Fatalf("Logcat: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("bytes = %q, want %q", got, want)
+	}
+	if len(adb.logcatCalls) != 1 || adb.logcatCalls[0] != (logcatCall{"dev-1", opts}) {
+		t.Errorf("logcatCalls = %v, want one (dev-1, %+v)", adb.logcatCalls, opts)
+	}
+}
+
+func TestManager_Logcat_FiveGuards(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	seedOfflineAndroid(t, repo, "off-1")
+	seedOnlineIOS(t, repo, "ios-1")
+	seedOnlineAndroid(t, repo, "nil-adb-target")
+
+	adb := &fakeADB{}
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	if _, err := mgr.Logcat("nope", LogcatOptions{}); !errors.Is(err, db.ErrNotFound) {
+		t.Errorf("not-found: err = %v, want ErrNotFound", err)
+	}
+	if _, err := mgr.Logcat("off-1", LogcatOptions{}); err == nil || !strings.Contains(err.Error(), "offline") {
+		t.Errorf("offline: err = %v, want offline-shape", err)
+	}
+	if _, err := mgr.Logcat("ios-1", LogcatOptions{}); err == nil || !strings.Contains(err.Error(), "not supported for platform ios") {
+		t.Errorf("ios: err = %v, want unsupported-platform", err)
+	}
+	nilMgr := newManagerWithNilADB(t, repo, bus)
+	if _, err := nilMgr.Logcat("nil-adb-target", LogcatOptions{}); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Errorf("nil adb: err = %v, want not-configured", err)
 	}
 }
 

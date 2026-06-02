@@ -22,6 +22,12 @@ type adbDriver interface {
 	WakeDevice(serial string) error
 	RebootDevice(serial string) error
 	GetBatteryInfo(serial string) (level int, charging bool, err error)
+	Tap(serial string, x, y int) error
+	Swipe(serial string, x1, y1, x2, y2, durationMs int) error
+	KeyEvent(serial, keycode string) error
+	InputText(serial, text string) error
+	Screenshot(serial string) ([]byte, error)
+	Logcat(serial string, opts LogcatOptions) ([]byte, error)
 }
 
 // isWirelessSerial returns true when id looks like an IP:port ADB serial
@@ -309,6 +315,124 @@ func (m *Manager) Reboot(id string) error {
 		return m.adb.RebootDevice(id)
 	}
 	return fmt.Errorf("reboot not supported for platform %s", device.Platform)
+}
+
+// Tap dispatches a single tap at (x, y) on the device. Returns ErrNotFound
+// when the device is unknown; an offline-shape error when the device is
+// offline; an unsupported-shape error for non-Android platforms.
+func (m *Manager) Tap(id string, x, y int) error {
+	device, err := m.repo.FindByID(id)
+	if err != nil {
+		return err
+	}
+	if device.Status == "offline" {
+		return fmt.Errorf("device %s is offline", id)
+	}
+	if device.Platform != PlatformAndroid {
+		return fmt.Errorf("tap not supported for platform %s", device.Platform)
+	}
+	if m.adb == nil {
+		return fmt.Errorf("tap unavailable: ADB bridge not configured")
+	}
+	return m.adb.Tap(id, x, y)
+}
+
+// Swipe dispatches a swipe gesture on the device. durationMs == 0 lets the
+// device pick its default; positive values pass through to `input swipe`.
+func (m *Manager) Swipe(id string, x1, y1, x2, y2, durationMs int) error {
+	device, err := m.repo.FindByID(id)
+	if err != nil {
+		return err
+	}
+	if device.Status == "offline" {
+		return fmt.Errorf("device %s is offline", id)
+	}
+	if device.Platform != PlatformAndroid {
+		return fmt.Errorf("swipe not supported for platform %s", device.Platform)
+	}
+	if m.adb == nil {
+		return fmt.Errorf("swipe unavailable: ADB bridge not configured")
+	}
+	return m.adb.Swipe(id, x1, y1, x2, y2, durationMs)
+}
+
+// KeyEvent dispatches a keyevent on the device. keycode must be a
+// non-negative integer or a symbolic KEYCODE_X identifier; the bridge
+// rejects anything else.
+func (m *Manager) KeyEvent(id, keycode string) error {
+	device, err := m.repo.FindByID(id)
+	if err != nil {
+		return err
+	}
+	if device.Status == "offline" {
+		return fmt.Errorf("device %s is offline", id)
+	}
+	if device.Platform != PlatformAndroid {
+		return fmt.Errorf("keyevent not supported for platform %s", device.Platform)
+	}
+	if m.adb == nil {
+		return fmt.Errorf("keyevent unavailable: ADB bridge not configured")
+	}
+	return m.adb.KeyEvent(id, keycode)
+}
+
+// InputText types text on the device. The bridge performs device-shell
+// quoting so embedded metacharacters in text stay literal.
+func (m *Manager) InputText(id, text string) error {
+	device, err := m.repo.FindByID(id)
+	if err != nil {
+		return err
+	}
+	if device.Status == "offline" {
+		return fmt.Errorf("device %s is offline", id)
+	}
+	if device.Platform != PlatformAndroid {
+		return fmt.Errorf("text input not supported for platform %s", device.Platform)
+	}
+	if m.adb == nil {
+		return fmt.Errorf("text input unavailable: ADB bridge not configured")
+	}
+	return m.adb.InputText(id, text)
+}
+
+// Screenshot returns a PNG snapshot of the device's current screen.
+// Returns ErrNotFound when the device is unknown, an offline-shape error
+// when the device is offline, and an unsupported-platform error for
+// non-Android platforms (iOS screenshot lands in a follow-up).
+func (m *Manager) Screenshot(id string) ([]byte, error) {
+	device, err := m.repo.FindByID(id)
+	if err != nil {
+		return nil, err
+	}
+	if device.Status == "offline" {
+		return nil, fmt.Errorf("device %s is offline", id)
+	}
+	if device.Platform != PlatformAndroid {
+		return nil, fmt.Errorf("screenshot not supported for platform %s", device.Platform)
+	}
+	if m.adb == nil {
+		return nil, fmt.Errorf("screenshot unavailable: ADB bridge not configured")
+	}
+	return m.adb.Screenshot(id)
+}
+
+// Logcat returns the device's logcat buffer as raw bytes. opts.Since /
+// opts.Filter narrow the output; the zero opts dumps the full buffer.
+func (m *Manager) Logcat(id string, opts LogcatOptions) ([]byte, error) {
+	device, err := m.repo.FindByID(id)
+	if err != nil {
+		return nil, err
+	}
+	if device.Status == "offline" {
+		return nil, fmt.Errorf("device %s is offline", id)
+	}
+	if device.Platform != PlatformAndroid {
+		return nil, fmt.Errorf("logcat not supported for platform %s", device.Platform)
+	}
+	if m.adb == nil {
+		return nil, fmt.Errorf("logcat unavailable: ADB bridge not configured")
+	}
+	return m.adb.Logcat(id, opts)
 }
 
 // HealthCheck returns health metrics for a device.

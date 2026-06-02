@@ -48,6 +48,11 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(devicesCmd)
 	rootCmd.AddCommand(runCmd)
+	rootCmd.AddCommand(tapCmd)
+	rootCmd.AddCommand(swipeCmd)
+	rootCmd.AddCommand(keyEventCmd)
+	rootCmd.AddCommand(textCmd)
+	rootCmd.AddCommand(inspectCmd)
 }
 
 func main() {

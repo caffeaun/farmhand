@@ -5,11 +5,23 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const adbTimeout = 5 * time.Second
+
+// inputTimeout is the default budget for `input tap|swipe|keyevent|text`
+// commands; it is longer than adbTimeout because `input` can block while
+// the device dispatches the event (notably swipe, which blocks for its
+// full duration).
+const inputTimeout = 15 * time.Second
+
+// keycodePattern accepts symbolic keycodes that the Android `input` utility
+// understands, e.g. KEYCODE_BACK, KEYCODE_VOLUME_UP, KEYCODE_DPAD_DOWN.
+var keycodePattern = regexp.MustCompile(`^KEYCODE_[A-Z0-9_]+$`)
 
 // ADBBridge wraps adb CLI commands via os/exec.CommandContext.
 type ADBBridge struct {
@@ -174,6 +186,190 @@ func (b *ADBBridge) RebootDevice(serial string) error {
 	return nil
 }
 
+// Tap dispatches a single tap event at (x, y) on the device.
+func (b *ADBBridge) Tap(serial string, x, y int) error {
+	if x < 0 || y < 0 {
+		return fmt.Errorf("invalid tap coordinates (%d,%d): must be non-negative", x, y)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), inputTimeout)
+	defer cancel()
+
+	_, err := b.runDevice(ctx, serial, "shell", "input", "tap", strconv.Itoa(x), strconv.Itoa(y))
+	if err != nil {
+		return fmt.Errorf("adb tap %s (%d,%d): %w", serial, x, y, err)
+	}
+	return nil
+}
+
+// Swipe dispatches a swipe gesture from (x1, y1) to (x2, y2). When
+// durationMs > 0 it is passed to `input swipe` as the gesture duration;
+// 0 omits the argument so adb uses the device default (~150ms).
+//
+// The CommandContext deadline scales with durationMs because `input swipe`
+// blocks for the full duration before exiting.
+func (b *ADBBridge) Swipe(serial string, x1, y1, x2, y2, durationMs int) error {
+	if x1 < 0 || y1 < 0 || x2 < 0 || y2 < 0 {
+		return fmt.Errorf("invalid swipe coordinates: must be non-negative")
+	}
+	if durationMs < 0 {
+		return fmt.Errorf("invalid swipe duration_ms %d: must be non-negative", durationMs)
+	}
+
+	timeout := inputTimeout
+	if dur := time.Duration(durationMs) * time.Millisecond; dur > timeout {
+		timeout = dur + 2*time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	args := []string{"shell", "input", "swipe",
+		strconv.Itoa(x1), strconv.Itoa(y1),
+		strconv.Itoa(x2), strconv.Itoa(y2),
+	}
+	if durationMs > 0 {
+		args = append(args, strconv.Itoa(durationMs))
+	}
+	if _, err := b.runDevice(ctx, serial, args...); err != nil {
+		return fmt.Errorf("adb swipe %s (%d,%d)->(%d,%d) dur=%dms: %w", serial, x1, y1, x2, y2, durationMs, err)
+	}
+	return nil
+}
+
+// KeyEvent dispatches a single keyevent to the device. The keycode must be
+// either a non-negative integer or a symbolic KEYCODE_X name; arbitrary
+// strings are rejected before they reach adb to prevent device-shell
+// metacharacters from being interpreted.
+func (b *ADBBridge) KeyEvent(serial, keycode string) error {
+	if keycode == "" {
+		return fmt.Errorf("invalid keycode: empty")
+	}
+	if _, err := strconv.ParseUint(keycode, 10, 32); err != nil {
+		if !keycodePattern.MatchString(keycode) {
+			return fmt.Errorf("invalid keycode %q: must be a non-negative integer or match ^KEYCODE_[A-Z0-9_]+$", keycode)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), inputTimeout)
+	defer cancel()
+
+	if _, err := b.runDevice(ctx, serial, "shell", "input", "keyevent", keycode); err != nil {
+		return fmt.Errorf("adb keyevent %s %s: %w", serial, keycode, err)
+	}
+	return nil
+}
+
+// InputText types the given text on the device. `adb shell input text`
+// is sensitive to device-shell metacharacters in text because adb
+// concatenates extra args and runs them through the device shell;
+// we instead pass one shell-quoted argument (`input text '<escaped>'`)
+// so the device shell treats text strictly as data.
+func (b *ADBBridge) InputText(serial, text string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), inputTimeout)
+	defer cancel()
+
+	cmd := "input text " + quoteForDeviceShell(text)
+	if _, err := b.runDevice(ctx, serial, "shell", cmd); err != nil {
+		return fmt.Errorf("adb input text %s: %w", serial, err)
+	}
+	return nil
+}
+
+// quoteForDeviceShell wraps s in single quotes for safe inclusion in a
+// device-shell command line. Embedded single quotes are escaped using the
+// standard sh-portable sequence: close the quoted run, emit one escaped
+// quote, then reopen the quoted run (`'\''`).
+func quoteForDeviceShell(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// screenshotTimeout is the budget for `exec-out screencap -p`. Screencap on
+// modern devices completes in well under a second; the buffer accounts for
+// slow USB, congested wireless adb, or a device under load.
+const screenshotTimeout = 15 * time.Second
+
+// Screenshot returns a PNG of the device's current screen. Internally runs
+// `adb -s <serial> exec-out screencap -p`, which streams a raw PNG to
+// stdout.
+func (b *ADBBridge) Screenshot(serial string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), screenshotTimeout)
+	defer cancel()
+
+	out, err := b.runDeviceRaw(ctx, serial, "exec-out", "screencap", "-p")
+	if err != nil {
+		return nil, fmt.Errorf("adb screencap %s: %w", serial, err)
+	}
+	return out, nil
+}
+
+// LogcatOptions selects which slice of the device's logcat ring buffer to
+// dump. The zero value asks adb for the full buffer (which can be large —
+// set Since to bound it).
+type LogcatOptions struct {
+	// Since, if non-zero, requests only entries newer than this many time
+	// units ago. The unit is the most natural for adb: minutes for >= 1m,
+	// seconds otherwise. Sub-second values are rounded up to 1s.
+	Since time.Duration
+
+	// Filter, if non-empty, becomes the priority filter passed as the
+	// trailing positional arg to logcat. Accepts the standard adb prefixes
+	// "V", "D", "I", "W", "E", "F", "S" (verbose…silent), e.g. "E" filters
+	// to error and fatal only.
+	Filter string
+}
+
+// logcatTimeout is the budget for a single non-streaming `logcat -d|-t N`
+// invocation. Default buffer dumps are typically small (a few hundred KB)
+// but a heavily-logging device can return more; keep the budget generous.
+const logcatTimeout = 30 * time.Second
+
+// Logcat dumps the device's logcat ring buffer as raw bytes (newline-
+// terminated UTF-8 lines, exactly as adb writes them). Streaming logcat
+// (`logcat -f` / `-T`) is intentionally out of scope; callers that want
+// a live tail should poll on a cadence and diff.
+//
+// The filter is validated against a small allow-list so the value cannot
+// inject device-shell tokens — important because logcat passes the trailing
+// positional through to the device shell.
+func (b *ADBBridge) Logcat(serial string, opts LogcatOptions) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), logcatTimeout)
+	defer cancel()
+
+	args := []string{"logcat", "-d"}
+	if opts.Since > 0 {
+		// adb's logcat -t accepts either a count of lines or a time of the
+		// form "M:SS" / "HH:MM:SS.mmm" / "Nm"/"Ns". The simplest portable
+		// form is `Nm` for minutes and `Ns` for seconds.
+		var arg string
+		if opts.Since >= time.Minute {
+			minutes := int(opts.Since / time.Minute)
+			if minutes < 1 {
+				minutes = 1
+			}
+			arg = fmt.Sprintf("%dm", minutes)
+		} else {
+			seconds := int(opts.Since / time.Second)
+			if seconds < 1 {
+				seconds = 1
+			}
+			arg = fmt.Sprintf("%ds", seconds)
+		}
+		args = append(args, "-t", arg)
+	}
+	if opts.Filter != "" {
+		switch opts.Filter {
+		case "V", "D", "I", "W", "E", "F", "S":
+			args = append(args, "*:"+opts.Filter)
+		default:
+			return nil, fmt.Errorf("invalid logcat filter %q: must be one of V D I W E F S", opts.Filter)
+		}
+	}
+
+	out, err := b.runDeviceRaw(ctx, serial, args...)
+	if err != nil {
+		return nil, fmt.Errorf("adb logcat %s: %w", serial, err)
+	}
+	return out, nil
+}
+
 // run executes an adb command without a device selector and returns stdout.
 func (b *ADBBridge) run(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, b.adbPath, args...)
@@ -190,4 +386,25 @@ func (b *ADBBridge) run(ctx context.Context, args ...string) (string, error) {
 func (b *ADBBridge) runDevice(ctx context.Context, serial string, args ...string) (string, error) {
 	fullArgs := append([]string{"-s", serial}, args...)
 	return b.run(ctx, fullArgs...)
+}
+
+// runRaw is the binary-safe counterpart to run: it returns stdout as bytes,
+// untrimmed, so callers receive the exact wire output (e.g. a PNG from
+// `exec-out screencap -p`).
+func (b *ADBBridge) runRaw(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, b.adbPath, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}
+
+// runDeviceRaw is the binary-safe runDevice; the returned bytes are exactly
+// what adb wrote to stdout, with no trimming or string conversion.
+func (b *ADBBridge) runDeviceRaw(ctx context.Context, serial string, args ...string) ([]byte, error) {
+	fullArgs := append([]string{"-s", serial}, args...)
+	return b.runRaw(ctx, fullArgs...)
 }
