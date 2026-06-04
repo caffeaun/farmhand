@@ -5,6 +5,26 @@ All notable changes to FarmHand are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-06-04
+
+### Added
+
+- `farmhand clear --device <id>` — kills every background app on the device (`am kill-all`) and then sends `KEYCODE_HOME` so the launcher is foregrounded. Useful as a clean-slate step between tests.
+- `farmhand launch --device <id> --package <pkg>` — starts the main launcher activity of an installed Android package via `am start --pn <pkg>`. The package id is validated against `^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$` at the bridge before reaching the device shell, so it cannot smuggle extra adb arguments.
+- `ADBBridge.KillAllApps(serial)` and `ADBBridge.Launch(serial, pkg)` methods on `internal/device/android.go`; `packageIDPattern` unexported regex for the launch path.
+- `Manager.KillAllApps(id)` and `Manager.Launch(id, pkg)` with the standard five-guard pattern (`FindByID` → `ErrNotFound`; offline → 409-shape; non-Android → unsupported-platform; nil-adb → not-configured; else bridge call). Both methods added to the consumer-side `adbDriver` interface.
+
+### Changed
+
+- `cmd/farmhand` shared `deviceManagerCLI` interface extended with `KillAllApps` and `Launch`; the production `Manager` already satisfies it.
+
+### Notes
+
+- `am start --pn` requires Android 10 (API 29) or later. On older devices `farmhand launch` will need the activity-class form; deferred until a real device demands it.
+- `kanoonthteam/tap`'s `clear.sh` and `launch.sh` (appId branch) should migrate from direct `adb shell` to these subcommands once devices-1 deploys the v0.6.1 binary.
+
+---
+
 ## [0.6.0] - 2026-06-02
 
 ### Added

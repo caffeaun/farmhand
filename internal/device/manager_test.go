@@ -44,6 +44,16 @@ type fakeADB struct {
 	logcatCalls     []logcatCall
 	logcatBytes     []byte
 	logcatErr       error
+
+	// Activity recorders & error knobs for KillAllApps/Launch.
+	killAllAppsCalls []string
+	killAllAppsErr   error
+	launchCalls      []launchCall
+	launchErr        error
+}
+
+type launchCall struct {
+	Serial, Package string
 }
 
 type logcatCall struct {
@@ -115,6 +125,14 @@ func (f *fakeADB) Screenshot(serial string) ([]byte, error) {
 func (f *fakeADB) Logcat(serial string, opts LogcatOptions) ([]byte, error) {
 	f.logcatCalls = append(f.logcatCalls, logcatCall{serial, opts})
 	return f.logcatBytes, f.logcatErr
+}
+func (f *fakeADB) KillAllApps(serial string) error {
+	f.killAllAppsCalls = append(f.killAllAppsCalls, serial)
+	return f.killAllAppsErr
+}
+func (f *fakeADB) Launch(serial, pkg string) error {
+	f.launchCalls = append(f.launchCalls, launchCall{serial, pkg})
+	return f.launchErr
 }
 
 // fakeIOS implements iosDriver with configurable behaviour.
@@ -1181,5 +1199,97 @@ func TestPoll_HardwareIDEmptyDoesNotMerge(t *testing.T) {
 	}
 	if err2 != nil {
 		t.Errorf("new record should exist: %v", err2)
+	}
+}
+
+func TestManager_KillAllApps_HappyPath(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	seedOnlineAndroid(t, repo, "dev-1")
+	adb := &fakeADB{}
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	if err := mgr.KillAllApps("dev-1"); err != nil {
+		t.Fatalf("KillAllApps: %v", err)
+	}
+	if len(adb.killAllAppsCalls) != 1 || adb.killAllAppsCalls[0] != "dev-1" {
+		t.Errorf("killAllAppsCalls = %v, want [\"dev-1\"]", adb.killAllAppsCalls)
+	}
+}
+
+func TestManager_KillAllApps_FiveGuards(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	seedOfflineAndroid(t, repo, "off-1")
+	seedOnlineIOS(t, repo, "ios-1")
+	seedOnlineAndroid(t, repo, "nil-adb-target")
+
+	adb := &fakeADB{}
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	if err := mgr.KillAllApps("does-not-exist"); !errors.Is(err, db.ErrNotFound) {
+		t.Errorf("not-found: err = %v, want ErrNotFound", err)
+	}
+	if err := mgr.KillAllApps("off-1"); err == nil || !strings.Contains(err.Error(), "offline") {
+		t.Errorf("offline: err = %v, want offline-shape", err)
+	}
+	if err := mgr.KillAllApps("ios-1"); err == nil || !strings.Contains(err.Error(), "not supported for platform ios") {
+		t.Errorf("ios: err = %v, want unsupported-platform", err)
+	}
+	nilMgr := newManagerWithNilADB(t, repo, bus)
+	if err := nilMgr.KillAllApps("nil-adb-target"); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Errorf("nil adb: err = %v, want not-configured", err)
+	}
+}
+
+func TestManager_Launch_HappyPath(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	seedOnlineAndroid(t, repo, "dev-1")
+	adb := &fakeADB{}
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	if err := mgr.Launch("dev-1", "com.example.app"); err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	if len(adb.launchCalls) != 1 || adb.launchCalls[0] != (launchCall{"dev-1", "com.example.app"}) {
+		t.Errorf("launchCalls = %v, want one call for (dev-1, com.example.app)", adb.launchCalls)
+	}
+}
+
+func TestManager_Launch_FiveGuards(t *testing.T) {
+	database := openTestDB(t)
+	repo := db.NewDeviceRepository(database)
+	bus := events.New()
+	defer bus.Close()
+
+	seedOfflineAndroid(t, repo, "off-1")
+	seedOnlineIOS(t, repo, "ios-1")
+	seedOnlineAndroid(t, repo, "nil-adb-target")
+
+	adb := &fakeADB{}
+	mgr := newManagerWithFakes(adb, nil, repo, bus, time.Minute)
+
+	if err := mgr.Launch("does-not-exist", "com.x.y"); !errors.Is(err, db.ErrNotFound) {
+		t.Errorf("not-found: err = %v, want ErrNotFound", err)
+	}
+	if err := mgr.Launch("off-1", "com.x.y"); err == nil || !strings.Contains(err.Error(), "offline") {
+		t.Errorf("offline: err = %v, want offline-shape", err)
+	}
+	if err := mgr.Launch("ios-1", "com.x.y"); err == nil || !strings.Contains(err.Error(), "not supported for platform ios") {
+		t.Errorf("ios: err = %v, want unsupported-platform", err)
+	}
+	nilMgr := newManagerWithNilADB(t, repo, bus)
+	if err := nilMgr.Launch("nil-adb-target", "com.x.y"); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Errorf("nil adb: err = %v, want not-configured", err)
 	}
 }

@@ -28,6 +28,8 @@ type adbDriver interface {
 	InputText(serial, text string) error
 	Screenshot(serial string) ([]byte, error)
 	Logcat(serial string, opts LogcatOptions) ([]byte, error)
+	KillAllApps(serial string) error
+	Launch(serial, pkg string) error
 }
 
 // isWirelessSerial returns true when id looks like an IP:port ADB serial
@@ -433,6 +435,45 @@ func (m *Manager) Logcat(id string, opts LogcatOptions) ([]byte, error) {
 		return nil, fmt.Errorf("logcat unavailable: ADB bridge not configured")
 	}
 	return m.adb.Logcat(id, opts)
+}
+
+// KillAllApps closes every background app on the device. Foreground
+// activities are not touched; pair with KeyEvent(KEYCODE_HOME) at the
+// caller if a strict "back to launcher" state is required.
+func (m *Manager) KillAllApps(id string) error {
+	device, err := m.repo.FindByID(id)
+	if err != nil {
+		return err
+	}
+	if device.Status == "offline" {
+		return fmt.Errorf("device %s is offline", id)
+	}
+	if device.Platform != PlatformAndroid {
+		return fmt.Errorf("kill-all not supported for platform %s", device.Platform)
+	}
+	if m.adb == nil {
+		return fmt.Errorf("kill-all unavailable: ADB bridge not configured")
+	}
+	return m.adb.KillAllApps(id)
+}
+
+// Launch starts the main launcher activity of the named Android package.
+// pkg is validated at the bridge against the Android package-id regex.
+func (m *Manager) Launch(id, pkg string) error {
+	device, err := m.repo.FindByID(id)
+	if err != nil {
+		return err
+	}
+	if device.Status == "offline" {
+		return fmt.Errorf("device %s is offline", id)
+	}
+	if device.Platform != PlatformAndroid {
+		return fmt.Errorf("launch not supported for platform %s", device.Platform)
+	}
+	if m.adb == nil {
+		return fmt.Errorf("launch unavailable: ADB bridge not configured")
+	}
+	return m.adb.Launch(id, pkg)
 }
 
 // HealthCheck returns health metrics for a device.

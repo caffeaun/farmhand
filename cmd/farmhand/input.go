@@ -13,13 +13,16 @@ import (
 )
 
 // deviceManagerCLI is the subset of *device.Manager methods used by the
-// tap/swipe/keyevent/text subcommands. Defined here so tests can inject a
-// fake without touching the real DB or adb binary.
+// device-IO subcommands (tap/swipe/keyevent/text/clear/launch). Defined
+// here so tests can inject a fake without touching the real DB or adb
+// binary.
 type deviceManagerCLI interface {
 	Tap(id string, x, y int) error
 	Swipe(id string, x1, y1, x2, y2, durationMs int) error
 	KeyEvent(id, keycode string) error
 	InputText(id, text string) error
+	KillAllApps(id string) error
+	Launch(id, pkg string) error
 }
 
 // inputManagerFactory builds the per-invocation manager + cleanup. The

@@ -571,6 +571,91 @@ func TestLogcat_RejectsInvalidFilter(t *testing.T) {
 	}
 }
 
+func TestKillAllApps_RecordsCorrectCommand(t *testing.T) {
+	dir := t.TempDir()
+	adbPath, recordPath := makeRecordingADB(t, dir)
+	bridge, _ := NewADBBridge(adbPath)
+
+	if err := bridge.KillAllApps("R58W2193TXP"); err != nil {
+		t.Fatalf("KillAllApps: %v", err)
+	}
+
+	got := readRecording(t, recordPath)
+	want := "-s R58W2193TXP shell am kill-all"
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("recording = %v, want [%q]", got, want)
+	}
+}
+
+func TestLaunch_RecordsCorrectCommand(t *testing.T) {
+	dir := t.TempDir()
+	adbPath, recordPath := makeRecordingADB(t, dir)
+	bridge, _ := NewADBBridge(adbPath)
+
+	if err := bridge.Launch("R58W2193TXP", "com.example.app"); err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+
+	got := readRecording(t, recordPath)
+	want := "-s R58W2193TXP shell am start --pn com.example.app"
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("recording = %v, want [%q]", got, want)
+	}
+}
+
+func TestLaunch_RejectsInvalidPackageID(t *testing.T) {
+	dir := t.TempDir()
+	adbPath, _ := makeRecordingADB(t, dir)
+	bridge, _ := NewADBBridge(adbPath)
+
+	invalid := []string{
+		"",                        // empty
+		"NoDots",                  // single segment
+		"Com.Example.App",         // uppercase
+		"com.example app",         // whitespace
+		"com.example.app;reboot",  // injection attempt
+		"com.example.-bad",        // segment starts with dash
+		".com.example",            // leading dot
+		"com..example",            // empty segment
+	}
+	for _, pkg := range invalid {
+		if err := bridge.Launch("X", pkg); err == nil {
+			t.Errorf("Launch(%q) accepted, expected rejection", pkg)
+		}
+	}
+}
+
+func TestLaunch_SurfacesAMErrorOutput(t *testing.T) {
+	dir := t.TempDir()
+	// Fake adb whose `am start` exits 0 but prints an error line, matching
+	// the actual behavior of older Android `am start` against an unknown
+	// package.
+	script := `#!/bin/sh
+case "$*" in
+  *"am start "*)
+    echo "Error: Activity class {com.unknown/.Main} does not exist."
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`
+	adbPath := filepath.Join(dir, "adb")
+	if err := os.WriteFile(adbPath, []byte(script), 0700); err != nil {
+		t.Fatalf("write fake adb: %v", err)
+	}
+	bridge, _ := NewADBBridge(adbPath)
+
+	err := bridge.Launch("X", "com.unknown.app")
+	if err == nil {
+		t.Fatal("expected error when am start prints an Error: line, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("error did not surface the am output: %v", err)
+	}
+}
+
 func TestQuoteForDeviceShell(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"", "''"},

@@ -52,6 +52,8 @@ func init() {
 	rootCmd.AddCommand(swipeCmd)
 	rootCmd.AddCommand(keyEventCmd)
 	rootCmd.AddCommand(textCmd)
+	rootCmd.AddCommand(clearCmd)
+	rootCmd.AddCommand(launchCmd)
 	rootCmd.AddCommand(inspectCmd)
 }
 

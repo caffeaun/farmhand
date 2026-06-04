@@ -10,11 +10,20 @@ import (
 // records the last call for each method so we can assert what the CLI
 // dispatched to the manager.
 type fakeInputManager struct {
-	tap       *fakeTapCall
-	swipe     *fakeSwipeCall
-	keyevent  *fakeKeyEventCall
-	inputText *fakeInputTextCall
-	err       error // returned by whichever method is called
+	tap         *fakeTapCall
+	swipe       *fakeSwipeCall
+	keyevent    *fakeKeyEventCall
+	inputText   *fakeInputTextCall
+	killAllApps *fakeKillAllAppsCall
+	launch      *fakeLaunchCall
+	err         error // returned by whichever method is called
+}
+
+type fakeKillAllAppsCall struct {
+	ID string
+}
+type fakeLaunchCall struct {
+	ID, Package string
 }
 
 type fakeTapCall struct {
@@ -46,6 +55,14 @@ func (f *fakeInputManager) KeyEvent(id, keycode string) error {
 }
 func (f *fakeInputManager) InputText(id, text string) error {
 	f.inputText = &fakeInputTextCall{id, text}
+	return f.err
+}
+func (f *fakeInputManager) KillAllApps(id string) error {
+	f.killAllApps = &fakeKillAllAppsCall{id}
+	return f.err
+}
+func (f *fakeInputManager) Launch(id, pkg string) error {
+	f.launch = &fakeLaunchCall{id, pkg}
 	return f.err
 }
 

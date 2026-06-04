@@ -23,6 +23,12 @@ const inputTimeout = 15 * time.Second
 // understands, e.g. KEYCODE_BACK, KEYCODE_VOLUME_UP, KEYCODE_DPAD_DOWN.
 var keycodePattern = regexp.MustCompile(`^KEYCODE_[A-Z0-9_]+$`)
 
+// packageIDPattern accepts Android package identifiers: a lowercase letter
+// followed by alnum/underscore segments separated by dots, e.g.
+// `com.example.app`. Validated before shelling out so the package id cannot
+// inject extra adb-shell arguments.
+var packageIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$`)
+
 // ADBBridge wraps adb CLI commands via os/exec.CommandContext.
 type ADBBridge struct {
 	adbPath string
@@ -269,6 +275,44 @@ func (b *ADBBridge) InputText(serial, text string) error {
 	cmd := "input text " + quoteForDeviceShell(text)
 	if _, err := b.runDevice(ctx, serial, "shell", cmd); err != nil {
 		return fmt.Errorf("adb input text %s: %w", serial, err)
+	}
+	return nil
+}
+
+// KillAllApps closes every background app on the device. Implemented as
+// `am kill-all`, which asks ActivityManager to terminate all user processes
+// that are not currently foreground. Foreground activities (the launcher,
+// any visible app) are not killed by this command; callers that want a
+// strict "back to launcher" state should pair KillAllApps with a
+// KEYCODE_HOME KeyEvent.
+func (b *ADBBridge) KillAllApps(serial string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), inputTimeout)
+	defer cancel()
+	if _, err := b.runDevice(ctx, serial, "shell", "am", "kill-all"); err != nil {
+		return fmt.Errorf("adb am kill-all %s: %w", serial, err)
+	}
+	return nil
+}
+
+// Launch starts the main launcher activity of the given Android package
+// using `am start --pn <pkg>`. The package id is validated against
+// packageIDPattern before reaching the device shell so it cannot smuggle
+// extra args. Requires Android 10+ for the --pn flag.
+func (b *ADBBridge) Launch(serial, pkg string) error {
+	if !packageIDPattern.MatchString(pkg) {
+		return fmt.Errorf("invalid package id %q: must match %s", pkg, packageIDPattern)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), inputTimeout)
+	defer cancel()
+	out, err := b.runDevice(ctx, serial, "shell", "am", "start", "--pn", pkg)
+	if err != nil {
+		return fmt.Errorf("adb am start --pn %s on %s: %w", pkg, serial, err)
+	}
+	// `am start` exits 0 even when the package is unknown; the failure is
+	// in stdout/stderr. Surface those well-known failure markers as errors
+	// so the CLI returns non-zero on "no main activity for the package".
+	if strings.Contains(out, "Error:") || strings.Contains(out, "does not exist") {
+		return fmt.Errorf("adb am start --pn %s on %s: %s", pkg, serial, strings.TrimSpace(out))
 	}
 	return nil
 }
