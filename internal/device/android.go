@@ -332,24 +332,42 @@ func (b *ADBBridge) KillAllApps(serial string) error {
 }
 
 // Launch starts the main launcher activity of the given Android package
-// using `am start --pn <pkg>`. The package id is validated against
-// packageIDPattern before reaching the device shell so it cannot smuggle
-// extra args. Requires Android 10+ for the --pn flag.
+// using `monkey -p <pkg> -c android.intent.category.LAUNCHER 1`. Monkey
+// resolves the LAUNCHER intent for the package internally, so the caller
+// does not need to know the activity class.
+//
+// We tried `am start --pn <pkg>` first (one shell round-trip, no monkey
+// dependency) but observed `IllegalArgumentException: Unknown option:
+// --pn` on Samsung One UI 7 (Android 14) and other production devices —
+// the flag is not part of the public `am` interface, contrary to some
+// online claims. Monkey works on all Android versions back to the
+// FarmHand-supported minimum.
+//
+// The package id is validated against packageIDPattern before reaching
+// the device shell so it cannot smuggle extra args.
 func (b *ADBBridge) Launch(serial, pkg string) error {
 	if !packageIDPattern.MatchString(pkg) {
 		return fmt.Errorf("invalid package id %q: must match %s", pkg, packageIDPattern)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), inputTimeout)
 	defer cancel()
-	out, err := b.runDevice(ctx, serial, "shell", "am", "start", "--pn", pkg)
+	out, err := b.runDevice(ctx, serial,
+		"shell", "monkey",
+		"-p", pkg,
+		"-c", "android.intent.category.LAUNCHER",
+		"1",
+	)
 	if err != nil {
-		return fmt.Errorf("adb am start --pn %s on %s: %w", pkg, serial, err)
+		return fmt.Errorf("adb monkey %s on %s: %w", pkg, serial, err)
 	}
-	// `am start` exits 0 even when the package is unknown; the failure is
-	// in stdout/stderr. Surface those well-known failure markers as errors
-	// so the CLI returns non-zero on "no main activity for the package".
-	if strings.Contains(out, "Error:") || strings.Contains(out, "does not exist") {
-		return fmt.Errorf("adb am start --pn %s on %s: %s", pkg, serial, strings.TrimSpace(out))
+	// monkey exits 0 even when the package isn't installed or has no
+	// LAUNCHER activity; the failure is in stdout. Surface those known
+	// markers as errors so the CLI returns non-zero on a missing/broken
+	// package.
+	if strings.Contains(out, "No activities found to run") ||
+		strings.Contains(out, "Error: Unable to resolve") ||
+		strings.Contains(out, "monkey aborted") {
+		return fmt.Errorf("monkey %s on %s: %s", pkg, serial, strings.TrimSpace(out))
 	}
 	return nil
 }

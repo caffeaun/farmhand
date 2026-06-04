@@ -722,7 +722,7 @@ func TestLaunch_RecordsCorrectCommand(t *testing.T) {
 	}
 
 	got := readRecording(t, recordPath)
-	want := "-s R58W2193TXP shell am start --pn com.example.app"
+	want := "-s R58W2193TXP shell monkey -p com.example.app -c android.intent.category.LAUNCHER 1"
 	if len(got) != 1 || got[0] != want {
 		t.Errorf("recording = %v, want [%q]", got, want)
 	}
@@ -750,15 +750,16 @@ func TestLaunch_RejectsInvalidPackageID(t *testing.T) {
 	}
 }
 
-func TestLaunch_SurfacesAMErrorOutput(t *testing.T) {
+func TestLaunch_SurfacesMonkeyErrorOutput(t *testing.T) {
 	dir := t.TempDir()
-	// Fake adb whose `am start` exits 0 but prints an error line, matching
-	// the actual behavior of older Android `am start` against an unknown
-	// package.
+	// Fake adb whose `monkey` exits 0 but prints "No activities found to
+	// run" — matching the actual behavior when the package isn't installed
+	// or has no LAUNCHER intent.
 	script := `#!/bin/sh
 case "$*" in
-  *"am start "*)
-    echo "Error: Activity class {com.unknown/.Main} does not exist."
+  *"shell monkey "*)
+    echo "***Error: Unable to resolve activity for: Intent ..."
+    echo "** No activities found to run, monkey aborted."
     exit 0
     ;;
   *)
@@ -774,10 +775,10 @@ esac
 
 	err := bridge.Launch("X", "com.unknown.app")
 	if err == nil {
-		t.Fatal("expected error when am start prints an Error: line, got nil")
+		t.Fatal("expected error when monkey prints 'No activities found to run', got nil")
 	}
-	if !strings.Contains(err.Error(), "does not exist") {
-		t.Errorf("error did not surface the am output: %v", err)
+	if !strings.Contains(err.Error(), "No activities found to run") {
+		t.Errorf("error did not surface the monkey output: %v", err)
 	}
 }
 

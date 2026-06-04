@@ -5,6 +5,14 @@ All notable changes to FarmHand are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] - 2026-06-04
+
+### Fixed
+
+- `ADBBridge.Launch` now uses `monkey -p <pkg> -c android.intent.category.LAUNCHER 1` instead of `am start --pn <pkg>`. The `--pn` flag turned out not to be part of the public `am` interface — Samsung One UI 7 (Android 14) and other production devices reject it with `IllegalArgumentException: Unknown option: --pn`. Monkey resolves the LAUNCHER intent for the package internally and works on every Android version FarmHand supports. Error surfacing updated to recognise monkey's "No activities found to run" / "Unable to resolve" markers.
+
+---
+
 ## [0.6.2] - 2026-06-04
 
 ### Fixed
