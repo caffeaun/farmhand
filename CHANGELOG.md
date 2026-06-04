@@ -5,6 +5,14 @@ All notable changes to FarmHand are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-06-04
+
+### Fixed
+
+- `parseDeviceLine` no longer mis-parses wireless serials that contain an mdns-deduplication suffix like `adb-R94Y10HS9SV-vxuG9I (2)._adb-tls-connect._tcp`. The previous implementation assumed `fields[1]` was the state column, so a single space inside the serial slid the state out from under the index and the device was either registered with a truncated ID (and `status=offline`) or dropped entirely. The parser now scans for the first known adb state keyword (`device`/`offline`/`unauthorized`/`authorizing`/`connecting`/`unknown`/`recovery`/`rescue`/`sideload`/`bootloader`/`host`) and joins everything before it as the serial. Lines without any recognised state are dropped rather than registered as phantom rows.
+
+---
+
 ## [0.6.1] - 2026-06-04
 
 ### Added

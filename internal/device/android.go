@@ -76,30 +76,67 @@ func (b *ADBBridge) Devices() ([]Device, error) {
 	return devices, nil
 }
 
+// adbDeviceStates is the set of state keywords adb emits in column 2 of
+// `adb devices -l`. parseDeviceLine anchors on the first occurrence of one
+// of these values to find the state column rather than assuming fields[1].
+// That assumption breaks for wireless serials with mdns deduplication
+// suffixes like "adb-<id>._adb-tls-connect._tcp (2)" — the space inside
+// the serial throws strings.Fields() off by one and the parser ends up
+// treating the second segment of the serial as the state.
+var adbDeviceStates = map[string]bool{
+	"device":       true, // ready for shell / install / etc.
+	"offline":      true,
+	"unauthorized": true,
+	"authorizing":  true,
+	"connecting":   true,
+	"unknown":      true,
+	"recovery":     true,
+	"rescue":       true,
+	"sideload":     true,
+	"bootloader":   true,
+	"host":         true,
+}
+
 // parseDeviceLine parses a single line from `adb devices -l`.
-// Format: <serial>\t<state> [key:value ...]
+// Format: <serial><whitespace><state> [key:value ...]
+// The serial may itself contain spaces (mdns dedup variants), so the state
+// column is located by scanning for the first known adbDeviceStates token
+// rather than by index.
 func parseDeviceLine(line string) (Device, bool) {
-	// Split on whitespace: first field is serial, second is state, rest are key:value pairs.
 	fields := strings.Fields(line)
 	if len(fields) < 2 {
 		return Device{}, false
 	}
 
-	serial := fields[0]
-	rawState := fields[1]
+	stateIdx := -1
+	for i, f := range fields {
+		if adbDeviceStates[f] {
+			stateIdx = i
+			break
+		}
+	}
+	if stateIdx < 1 {
+		// No known state found, or state appeared at index 0 leaving no
+		// serial. Drop the row rather than register a phantom record.
+		return Device{}, false
+	}
+
+	serial := strings.Join(fields[:stateIdx], " ")
+	rawState := fields[stateIdx]
 
 	var status string
 	switch rawState {
 	case "device":
 		status = "online"
-	case "offline", "unauthorized":
-		status = "offline"
 	default:
+		// offline / unauthorized / authorizing / connecting / unknown /
+		// recovery / rescue / sideload / bootloader / host — all imply
+		// "not addressable for normal work" from FarmHand's perspective.
 		status = "offline"
 	}
 
 	model := ""
-	for _, kv := range fields[2:] {
+	for _, kv := range fields[stateIdx+1:] {
 		if strings.HasPrefix(kv, "model:") {
 			model = strings.TrimPrefix(kv, "model:")
 			break

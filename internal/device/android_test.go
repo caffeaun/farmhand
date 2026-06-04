@@ -163,6 +163,131 @@ func TestDevices_MultiDevice(t *testing.T) {
 	}
 }
 
+func TestParseDeviceLine_USBOnlineWithModel(t *testing.T) {
+	line := "RFCXXXXXXXXX           device usb:1-1 product:starqltesq model:SM_S911B transport_id:1"
+	d, ok := parseDeviceLine(line)
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	if d.ID != "RFCXXXXXXXXX" {
+		t.Errorf("ID = %q, want RFCXXXXXXXXX", d.ID)
+	}
+	if d.Status != "online" {
+		t.Errorf("Status = %q, want online", d.Status)
+	}
+	if d.Model != "SM_S911B" {
+		t.Errorf("Model = %q, want SM_S911B", d.Model)
+	}
+}
+
+func TestParseDeviceLine_USBOffline(t *testing.T) {
+	line := "ABCDEF123456           offline usb:1-2 product:raven model:Pixel_6_Pro transport_id:2"
+	d, ok := parseDeviceLine(line)
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	if d.ID != "ABCDEF123456" {
+		t.Errorf("ID = %q, want ABCDEF123456", d.ID)
+	}
+	if d.Status != "offline" {
+		t.Errorf("Status = %q, want offline", d.Status)
+	}
+}
+
+func TestParseDeviceLine_USBUnauthorized(t *testing.T) {
+	line := "UNAUTHORIZED1          unauthorized usb:1-3 transport_id:3"
+	d, ok := parseDeviceLine(line)
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	if d.ID != "UNAUTHORIZED1" {
+		t.Errorf("ID = %q, want UNAUTHORIZED1", d.ID)
+	}
+	if d.Status != "offline" {
+		t.Errorf("Status = %q (unauthorized → offline expected)", d.Status)
+	}
+}
+
+func TestParseDeviceLine_WirelessMDNSDedup(t *testing.T) {
+	// Real-world output observed on devices-1 when a stale mdns
+	// registration causes adb to append a "(N)" suffix to disambiguate.
+	// The serial then contains a single space and `strings.Fields(line)`
+	// produces three tokens before reaching the state column.
+	line := "adb-R94Y10HS9SV-vxuG9I (2)._adb-tls-connect._tcp    device product:raven model:Pixel_6_Pro transport_id:4"
+	d, ok := parseDeviceLine(line)
+	if !ok {
+		t.Fatal("parse failed for wireless mdns-dedup serial")
+	}
+	want := "adb-R94Y10HS9SV-vxuG9I (2)._adb-tls-connect._tcp"
+	if d.ID != want {
+		t.Errorf("ID = %q, want %q (whole serial including the space)", d.ID, want)
+	}
+	if d.Status != "online" {
+		t.Errorf("Status = %q, want online", d.Status)
+	}
+	if d.Model != "Pixel_6_Pro" {
+		t.Errorf("Model = %q, want Pixel_6_Pro (key:value scan must skip past the state column)", d.Model)
+	}
+}
+
+func TestParseDeviceLine_WirelessNoDedup(t *testing.T) {
+	// The canonical wireless form, no space in the serial.
+	line := "adb-R58W2193TXP-aBcDeF._adb-tls-connect._tcp\tdevice\tmodel:SM_S911B"
+	d, ok := parseDeviceLine(line)
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	if d.ID != "adb-R58W2193TXP-aBcDeF._adb-tls-connect._tcp" {
+		t.Errorf("ID = %q, want the full wireless serial", d.ID)
+	}
+	if d.Status != "online" {
+		t.Errorf("Status = %q, want online", d.Status)
+	}
+}
+
+func TestParseDeviceLine_RejectsLinesWithoutKnownState(t *testing.T) {
+	// Single token, no state: drop.
+	if _, ok := parseDeviceLine("just-a-serial"); ok {
+		t.Error("expected drop for single-token line")
+	}
+	// Empty: drop.
+	if _, ok := parseDeviceLine(""); ok {
+		t.Error("expected drop for empty line")
+	}
+	// State word appears at index 0 (no serial in front of it): drop, since
+	// "device" alone cannot identify a device.
+	if _, ok := parseDeviceLine("device"); ok {
+		t.Error("expected drop when no serial precedes the state")
+	}
+	// Garbage line that doesn't contain any known state: drop. Old parser
+	// would have accepted this and called fields[1] the state (then mapped
+	// to default → offline), registering a phantom device row.
+	if _, ok := parseDeviceLine("RFCXXXXXXXXX foo bar baz"); ok {
+		t.Error("expected drop when no field matches a known adb state")
+	}
+}
+
+func TestParseDeviceLine_StateColonKeyValueDoesNotShadowState(t *testing.T) {
+	// `adb devices -l` may emit a `device:<name>` key:value attribute
+	// after the state column. The state-anchor scan must match exact
+	// `device` (no colon) so the key:value pair is never mistaken for
+	// the state column.
+	line := "RFCXXXXXXXXX device usb:1-1 device:rev_a model:SM_S911B"
+	d, ok := parseDeviceLine(line)
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	if d.ID != "RFCXXXXXXXXX" {
+		t.Errorf("ID = %q, want RFCXXXXXXXXX", d.ID)
+	}
+	if d.Status != "online" {
+		t.Errorf("Status = %q, want online", d.Status)
+	}
+	if d.Model != "SM_S911B" {
+		t.Errorf("Model = %q, want SM_S911B", d.Model)
+	}
+}
+
 func TestDevices_NoDevices(t *testing.T) {
 	dir := t.TempDir()
 	adbPath := makeEmptyADB(t, dir)
