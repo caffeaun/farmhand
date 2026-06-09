@@ -70,9 +70,20 @@ fi
 echo "installed $BIN_DEST"
 
 # Configure: hand off to `farmhand setup`. Pass through any extra args.
+#
+# When this script is invoked via `curl ... | sh`, stdin is the curl pipe —
+# every prompt would read EOF and silently accept defaults. Redirect stdin
+# from /dev/tty so the user actually sees and answers the prompts. If
+# /dev/tty is unavailable (CI / Docker without a TTY), let stdin pass
+# through and trust the caller to pass --yes.
+TTY_REDIRECT=""
+if [ -r /dev/tty ]; then
+  TTY_REDIRECT="< /dev/tty"
+fi
+
 echo "running farmhand setup $*"
 if [ "$(id -u)" -eq 0 ]; then
-  exec "$BIN_DEST" setup "$@"
+  eval exec "$BIN_DEST" setup "$@" "$TTY_REDIRECT"
 else
-  exec sudo "$BIN_DEST" setup "$@"
+  eval exec sudo "$BIN_DEST" setup "$@" "$TTY_REDIRECT"
 fi

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 )
 
@@ -11,14 +12,47 @@ import (
 // In tests both can be in-memory buffers; in production they're os.Stdin /
 // os.Stderr.
 type Prompter struct {
-	In       io.Reader
-	Out      io.Writer
-	Assume   bool // when true, all Confirm calls auto-answer yes and all Ask calls return the default
-	reader   *bufio.Reader
+	In     io.Reader
+	Out    io.Writer
+	Assume bool // when true, all Confirm calls auto-answer yes and all Ask calls return the default
+	reader *bufio.Reader
 }
 
+// NewPrompter constructs a Prompter. If in is *os.File and is not a terminal
+// (i.e. stdin came from a pipe — typical with `curl | sh`), we try to fall
+// back to /dev/tty so prompts actually wait for the user. If /dev/tty is
+// unavailable too, the prompter still works but every Ask returns its
+// default and every Confirm returns defaultYes — same effect as Assume=true.
 func NewPrompter(in io.Reader, out io.Writer, assumeYes bool) *Prompter {
+	if !assumeYes {
+		if reopened, ok := openTTYIfPiped(in); ok {
+			in = reopened
+		}
+	}
 	return &Prompter{In: in, Out: out, Assume: assumeYes, reader: bufio.NewReader(in)}
+}
+
+// openTTYIfPiped returns /dev/tty when `in` is an *os.File that isn't a
+// terminal (e.g. stdin from a pipe). Returns the original reader otherwise.
+// The boolean reports whether the swap happened.
+func openTTYIfPiped(in io.Reader) (io.Reader, bool) {
+	f, ok := in.(*os.File)
+	if !ok {
+		return in, false
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		return in, false
+	}
+	if fi.Mode()&os.ModeCharDevice != 0 {
+		// stdin is already a TTY; no swap needed.
+		return in, false
+	}
+	tty, err := os.Open("/dev/tty")
+	if err != nil {
+		return in, false
+	}
+	return tty, true
 }
 
 // Ask prompts with a single-line question. If def is non-empty it's shown in

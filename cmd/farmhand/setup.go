@@ -180,23 +180,23 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	if iosSimsCSV != "" {
 		cfg.Devices.IOSSimulators = splitAndTrim(iosSimsCSV)
 	}
-	overwrite := assumeYes
-	if !assumeYes {
-		if _, statErr := os.Stat(layout.ConfigPath); statErr == nil {
-			confirm, err := p.Confirm(fmt.Sprintf("%s already exists. Overwrite?", layout.ConfigPath), false)
-			if err != nil {
-				return err
-			}
-			if !confirm {
-				return fmt.Errorf("aborted by user — config not overwritten")
-			}
-			overwrite = true
+
+	writeConfigFile := true
+	if _, statErr := os.Stat(layout.ConfigPath); statErr == nil && !assumeYes {
+		confirm, err := p.Confirm(fmt.Sprintf("%s already exists. Overwrite?", layout.ConfigPath), false)
+		if err != nil {
+			return err
 		}
+		writeConfigFile = confirm
 	}
-	if err := installer.WriteConfig(layout.ConfigPath, cfg, overwrite); err != nil {
-		return err
+	if writeConfigFile {
+		if err := installer.WriteConfig(layout.ConfigPath, cfg, true); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "wrote %s\n", layout.ConfigPath)
+	} else {
+		fmt.Fprintf(os.Stderr, "keeping existing %s — daemon will be refreshed to point at it\n", layout.ConfigPath)
 	}
-	fmt.Fprintf(os.Stderr, "wrote %s\n", layout.ConfigPath)
 
 	// Daemon
 	if !noDaemon {
