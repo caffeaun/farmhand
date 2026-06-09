@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -32,6 +34,11 @@ func init() {
 	setupCmd.Flags().String("tunnel-host", "", "Cloudflare tunnel hostname (e.g. devices-2.example.com); enables tunnel config")
 	setupCmd.Flags().String("tunnel-id", "", "Cloudflare tunnel UUID (from `cloudflared tunnel create`)")
 	setupCmd.Flags().String("tunnel-name", "", "Cloudflare tunnel name (used in `route dns` instructions)")
+	setupCmd.Flags().String("adb-path", "", "path to adb binary (auto-detected if empty)")
+	setupCmd.Flags().String("webhook-url", "", "webhook URL for job notifications (empty disables)")
+	setupCmd.Flags().Int("max-concurrent-jobs", 3, "maximum jobs that may execute in parallel")
+	setupCmd.Flags().String("vision-api-key-env", "MINIMAX_API_KEY", "env var holding the vision LLM API key")
+	setupCmd.Flags().String("ios-simulators", "", "comma-separated iOS simulator UDIDs or names (macOS only)")
 	setupCmd.Flags().Bool("yes", false, "assume defaults / yes to every prompt")
 }
 
@@ -51,6 +58,11 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	tunnelHost, _ := cmd.Flags().GetString("tunnel-host")
 	tunnelID, _ := cmd.Flags().GetString("tunnel-id")
 	tunnelName, _ := cmd.Flags().GetString("tunnel-name")
+	adbPath, _ := cmd.Flags().GetString("adb-path")
+	webhookURL, _ := cmd.Flags().GetString("webhook-url")
+	maxJobs, _ := cmd.Flags().GetInt("max-concurrent-jobs")
+	visionKeyEnv, _ := cmd.Flags().GetString("vision-api-key-env")
+	iosSimsCSV, _ := cmd.Flags().GetString("ios-simulators")
 	assumeYes, _ := cmd.Flags().GetBool("yes")
 
 	p := installer.NewPrompter(os.Stdin, os.Stderr, assumeYes)
@@ -78,11 +90,59 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 				return err
 			}
 		}
-	} else if host == "" {
-		if tunnelHost != "" {
-			host = "127.0.0.1"
-		} else {
-			host = "0.0.0.0"
+
+		// ADB path: auto-detect, then let user confirm/override.
+		if adbPath == "" {
+			if detected, err := exec.LookPath("adb"); err == nil {
+				adbPath = detected
+			} else {
+				adbPath = "adb"
+			}
+		}
+		if adbPath, err = p.Ask("Path to adb (Android device support)", adbPath); err != nil {
+			return err
+		}
+
+		// iOS simulators — macOS-only prompt.
+		if plat.OS == "darwin" && iosSimsCSV == "" {
+			hint := "comma-separated UDIDs or names; empty disables (list with: xcrun simctl list devices)"
+			if iosSimsCSV, err = p.Ask("iOS simulators to manage ("+hint+")", ""); err != nil {
+				return err
+			}
+		}
+
+		// Concurrency cap.
+		jobsStr, err := p.Ask("Max concurrent jobs", strconv.Itoa(maxJobs))
+		if err != nil {
+			return err
+		}
+		if n, err := strconv.Atoi(jobsStr); err == nil && n > 0 {
+			maxJobs = n
+		}
+
+		// Notifications webhook (optional).
+		if webhookURL, err = p.Ask("Webhook URL for job notifications (empty = none)", webhookURL); err != nil {
+			return err
+		}
+
+		// Vision API key env var name.
+		if visionKeyEnv, err = p.Ask("Env var holding the vision LLM API key", visionKeyEnv); err != nil {
+			return err
+		}
+	} else {
+		if host == "" {
+			if tunnelHost != "" {
+				host = "127.0.0.1"
+			} else {
+				host = "0.0.0.0"
+			}
+		}
+		if adbPath == "" {
+			if detected, err := exec.LookPath("adb"); err == nil {
+				adbPath = detected
+			} else {
+				adbPath = "adb"
+			}
 		}
 	}
 
@@ -110,6 +170,16 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	}
 
 	cfg := installer.DefaultConfig(layout, port, host, token, devMode)
+	// Apply user-customisable fields on top of defaults.
+	cfg.Devices.ADBPath = adbPath
+	cfg.Jobs.MaxConcurrentJobs = maxJobs
+	cfg.Notifications.WebhookURL = webhookURL
+	if visionKeyEnv != "" {
+		cfg.Vision.APIKeyEnv = visionKeyEnv
+	}
+	if iosSimsCSV != "" {
+		cfg.Devices.IOSSimulators = splitAndTrim(iosSimsCSV)
+	}
 	overwrite := assumeYes
 	if !assumeYes {
 		if _, statErr := os.Stat(layout.ConfigPath); statErr == nil {
@@ -188,4 +258,16 @@ func writeRuntimeDirs(layout installer.Layout) error {
 		}
 	}
 	return nil
+}
+
+// splitAndTrim parses a comma-separated user input into a clean slice.
+// Empty tokens are dropped so trailing commas don't produce blank entries.
+func splitAndTrim(csv string) []string {
+	out := []string{}
+	for _, p := range strings.Split(csv, ",") {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }

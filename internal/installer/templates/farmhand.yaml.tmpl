@@ -23,7 +23,12 @@ devices:
   adb_path: "{{ .Devices.ADBPath }}"
   # iOS simulators to manage as a fleet (macOS + full Xcode only).
   # Add UDIDs or names from `xcrun simctl list devices`. Empty disables it.
-  ios_simulators: []
+  ios_simulators:{{ if .Devices.IOSSimulators }}
+{{- range .Devices.IOSSimulators }}
+    - "{{ . }}"
+{{- end }}
+{{- else }} []
+{{- end }}
 
 jobs:
   default_timeout_minutes: {{ .Jobs.DefaultTimeoutMin }}
@@ -34,7 +39,7 @@ jobs:
   max_artifact_size_mb: {{ .Jobs.MaxArtifactSizeMB }}
 
 notifications:
-  webhook_url: ""
+  webhook_url: "{{ .Notifications.WebhookURL }}"
   notify_on:
     - failure
     - completion

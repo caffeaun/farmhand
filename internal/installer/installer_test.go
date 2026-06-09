@@ -84,11 +84,37 @@ func TestRenderConfig(t *testing.T) {
 		`path: "/opt/farmhand/farmhand.db"`,
 		`artifact_storage_path: "/opt/farmhand/artifacts"`,
 		`model: "MiniMax-M3"`,
+		"ios_simulators: []",  // empty sim list renders as flow-style []
 	}
 	for _, c := range checks {
 		if !strings.Contains(s, c) {
 			t.Errorf("rendered config missing %q. Output:\n%s", c, s)
 		}
+	}
+}
+
+func TestRenderConfigWithSimulatorsAndWebhook(t *testing.T) {
+	layout := DerivedLayout("/opt/farmhand")
+	cfg := DefaultConfig(layout, 8080, "127.0.0.1", "tok", false)
+	cfg.Devices.IOSSimulators = []string{"iPhone 17 Pro", "iPad Air (M3)"}
+	cfg.Notifications.WebhookURL = "https://hooks.example.com/farmhand"
+	body, err := RenderConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, c := range []string{
+		`- "iPhone 17 Pro"`,
+		`- "iPad Air (M3)"`,
+		`webhook_url: "https://hooks.example.com/farmhand"`,
+	} {
+		if !strings.Contains(s, c) {
+			t.Errorf("rendered config missing %q. Output:\n%s", c, s)
+		}
+	}
+	// Make sure we didn't accidentally emit the empty-list sentinel as well.
+	if strings.Contains(s, "ios_simulators: []") {
+		t.Errorf("rendered config still contains 'ios_simulators: []' alongside list items")
 	}
 }
 
