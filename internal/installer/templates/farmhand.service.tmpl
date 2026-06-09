@@ -1,0 +1,17 @@
+[Unit]
+Description=FarmHand mobile device farm
+After=network.target
+
+[Service]
+Type=simple
+User={{ .User }}
+Group={{ .User }}
+WorkingDirectory={{ .InstallDir }}
+ExecStart={{ .BinaryPath }} serve --config {{ .ConfigPath }}
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

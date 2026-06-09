@@ -72,6 +72,8 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
+
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
@@ -81,4 +83,6 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
-          files: artifacts/farmhand-*
+          files: |
+            artifacts/farmhand-*
+            install.sh

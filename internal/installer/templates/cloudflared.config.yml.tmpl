@@ -1,0 +1,8 @@
+tunnel: {{ .TunnelID }}
+credentials-file: {{ .CredentialsPath }}
+
+ingress:
+  - hostname: {{ .Hostname }}
+    path: /api/.*
+    service: http://127.0.0.1:{{ .ServerPort }}
+  - service: http_status:404
