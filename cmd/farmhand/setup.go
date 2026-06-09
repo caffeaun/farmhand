@@ -198,6 +198,21 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(os.Stderr, "keeping existing %s — daemon will be refreshed to point at it\n", layout.ConfigPath)
 	}
 
+	// On macOS, the LaunchAgent runs as the invoking user, not root. install.sh
+	// re-execs setup under sudo, which makes /opt/farmhand and farmhand.yaml
+	// root-owned (mode 0600) — unreadable by the user, so the daemon fails
+	// to start with "loaded but no PID". Detect SUDO_USER and hand ownership
+	// back so the user-scope LaunchAgent can actually read its own config.
+	if plat.OS == "darwin" {
+		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && os.Geteuid() == 0 {
+			if out, err := exec.Command("chown", "-R", sudoUser, layout.InstallDir).CombinedOutput(); err != nil {
+				fmt.Fprintf(os.Stderr, "(warning) chown %s -> %s failed: %v: %s\n", layout.InstallDir, sudoUser, err, strings.TrimSpace(string(out)))
+			} else {
+				fmt.Fprintf(os.Stderr, "chowned %s to %s (so the LaunchAgent can read it)\n", layout.InstallDir, sudoUser)
+			}
+		}
+	}
+
 	// Daemon
 	if !noDaemon {
 		dm := plat.DetectDaemonManager()
@@ -206,7 +221,14 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 			if err := installer.InstallSystemd(layout); err != nil {
 				return err
 			}
+			// `enable --now` starts the unit on first install and is a no-op
+			// when already enabled+running. A separate restart ensures any
+			// changes to the unit file (after daemon-reload) take effect on
+			// reruns.
 			if err := installer.StartSystemd(); err != nil {
+				return err
+			}
+			if err := installer.RestartSystemd(); err != nil {
 				return err
 			}
 			fmt.Fprintln(os.Stderr, "installed and started systemd unit farmhand.service")
@@ -214,10 +236,13 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 			if err := installer.InstallLaunchd(layout); err != nil {
 				return err
 			}
-			if err := installer.StartLaunchd(); err != nil {
+			// RestartLaunchd unloads first, then loads — required so a rerun
+			// actually picks up the newly-written plist content. A plain
+			// `launchctl load` of an already-registered label is a no-op.
+			if err := installer.RestartLaunchd(); err != nil {
 				return err
 			}
-			fmt.Fprintln(os.Stderr, "installed and loaded LaunchAgent io.kanolab.farmhand")
+			fmt.Fprintln(os.Stderr, "installed and (re)loaded LaunchAgent io.kanolab.farmhand")
 		case installer.DaemonNone:
 			fmt.Fprintln(os.Stderr, "no service manager detected — skipping daemon install")
 		}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/caffeaun/farmhand/internal/config"
 	"github.com/caffeaun/farmhand/internal/installer"
 )
 
@@ -25,7 +26,19 @@ func init() {
 func runDoctor(cmd *cobra.Command, _ []string) error {
 	installDir, _ := cmd.Flags().GetString("install-dir")
 	layout := installer.DerivedLayout(installDir)
-	results := installer.RunDoctor(layout, cfg)
+
+	// `cfg` (the package-level global loaded by PersistentPreRunE) is read
+	// from --config, default "farmhand.yaml" relative to cwd. From an
+	// unrelated working directory, that's the defaults — which makes the
+	// health-endpoint check probe the wrong port. Prefer the install dir's
+	// canonical config; fall back to the prerun cfg if explicit --config
+	// was given but reading the install-dir copy failed.
+	doctorCfg := cfg
+	if loaded, err := config.Load(layout.ConfigPath); err == nil {
+		doctorCfg = loaded
+	}
+
+	results := installer.RunDoctor(layout, doctorCfg)
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "CHECK\tSTATUS\tDETAIL")
